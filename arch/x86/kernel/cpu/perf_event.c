@@ -25,7 +25,6 @@
 #include <linux/cpu.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
-#include <linux/nospec.h>
 
 #include <asm/apic.h>
 #include <asm/stacktrace.h>
@@ -68,7 +67,7 @@ u64 x86_perf_event_update(struct perf_event *event)
 	int shift = 64 - x86_pmu.cntval_bits;
 	u64 prev_raw_count, new_raw_count;
 	int idx = hwc->idx;
-	u64 delta;
+	s64 delta;
 
 	if (idx == INTEL_PMC_IDX_FIXED_BTS)
 		return 0;
@@ -189,8 +188,8 @@ static void release_pmc_hardware(void) {}
 
 static bool check_hw_exists(void)
 {
-	u64 val, val_fail = -1, val_new= ~0;
-	int i, reg, reg_fail = -1, ret = 0;
+	u64 val, val_fail, val_new= ~0;
+	int i, reg, reg_fail, ret = 0;
 	int bios_fail = 0;
 	int reg_safe = -1;
 
@@ -255,15 +254,16 @@ static bool check_hw_exists(void)
 	 * We still allow the PMU driver to operate:
 	 */
 	if (bios_fail) {
-		printk(KERN_CONT "Broken BIOS detected, complain to your hardware vendor.\n");
-		printk(KERN_ERR FW_BUG "the BIOS has corrupted hw-PMU resources (MSR %x is %Lx)\n", reg_fail, val_fail);
+		pr_cont("Broken BIOS detected, complain to your hardware vendor.\n");
+		pr_err(FW_BUG "the BIOS has corrupted hw-PMU resources (MSR %x is %Lx)\n",
+			      reg_fail, val_fail);
 	}
 
 	return true;
 
 msr_fail:
-	printk(KERN_CONT "Broken PMU hardware detected, using software events only.\n");
-	printk("%sFailed to access perfctr msr (MSR %x is %Lx)\n",
+	pr_cont("Broken PMU hardware detected, using software events only.\n");
+	pr_info("%sFailed to access perfctr msr (MSR %x is %Lx)\n",
 		boot_cpu_has(X86_FEATURE_HYPERVISOR) ? KERN_INFO : KERN_ERR,
 		reg, val_new);
 
@@ -298,20 +298,17 @@ set_ext_hw_attr(struct hw_perf_event *hwc, struct perf_event *event)
 
 	config = attr->config;
 
-	cache_type = (config >> 0) & 0xff;
+	cache_type = (config >>  0) & 0xff;
 	if (cache_type >= PERF_COUNT_HW_CACHE_MAX)
 		return -EINVAL;
-	cache_type = array_index_nospec(cache_type, PERF_COUNT_HW_CACHE_MAX);
 
 	cache_op = (config >>  8) & 0xff;
 	if (cache_op >= PERF_COUNT_HW_CACHE_OP_MAX)
 		return -EINVAL;
-	cache_op = array_index_nospec(cache_op, PERF_COUNT_HW_CACHE_OP_MAX);
 
 	cache_result = (config >> 16) & 0xff;
 	if (cache_result >= PERF_COUNT_HW_CACHE_RESULT_MAX)
 		return -EINVAL;
-	cache_result = array_index_nospec(cache_result, PERF_COUNT_HW_CACHE_RESULT_MAX);
 
 	val = hw_cache_event_ids[cache_type][cache_op][cache_result];
 
@@ -408,8 +405,6 @@ int x86_setup_perfctr(struct perf_event *event)
 	if (attr->config >= x86_pmu.max_events)
 		return -EINVAL;
 
-	attr->config = array_index_nospec((unsigned long)attr->config, x86_pmu.max_events);
-
 	/*
 	 * The generic map:
 	 */
@@ -487,6 +482,9 @@ int x86_pmu_hw_config(struct perf_event *event)
 
 			/* Support for IP fixup */
 			if (x86_pmu.lbr_nr || x86_pmu.intel_cap.pebs_format >= 2)
+				precise++;
+
+			if (x86_pmu.pebs_prec_dist)
 				precise++;
 		}
 
@@ -1604,8 +1602,7 @@ __init struct attribute **merge_attr(struct attribute **a, struct attribute **b)
 	return new;
 }
 
-ssize_t events_sysfs_show(struct device *dev, struct device_attribute *attr,
-			  char *page)
+ssize_t events_sysfs_show(struct device *dev, struct device_attribute *attr, char *page)
 {
 	struct perf_pmu_events_attr *pmu_attr = \
 		container_of(attr, struct perf_pmu_events_attr, attr);
@@ -1617,6 +1614,7 @@ ssize_t events_sysfs_show(struct device *dev, struct device_attribute *attr,
 
 	return x86_pmu.events_sysfs_show(page, config);
 }
+EXPORT_SYMBOL_GPL(events_sysfs_show);
 
 EVENT_ATTR(cpu-cycles,			CPU_CYCLES		);
 EVENT_ATTR(instructions,		INSTRUCTIONS		);
@@ -2001,7 +1999,6 @@ static int x86_pmu_event_init(struct perf_event *event)
 	if (err) {
 		if (event->destroy)
 			event->destroy(event);
-		event->destroy = NULL;
 	}
 
 	if (ACCESS_ONCE(x86_pmu.attr_rdpmc))
@@ -2012,8 +2009,8 @@ static int x86_pmu_event_init(struct perf_event *event)
 
 static void refresh_pce(void *ignored)
 {
-	if (current->active_mm)
-		load_mm_cr4(current->active_mm);
+	if (current->mm)
+		load_mm_cr4(current->mm);
 }
 
 static void x86_pmu_event_mapped(struct perf_event *event)
@@ -2279,12 +2276,19 @@ perf_callchain_user32(struct pt_regs *regs, struct perf_callchain_entry *entry)
 	ss_base = get_segment_base(regs->ss);
 
 	fp = compat_ptr(ss_base + regs->bp);
-	while (entry->nr < PERF_MAX_STACK_DEPTH) {
+	pagefault_disable();
+	while (entry->nr < sysctl_perf_event_max_stack) {
 		unsigned long bytes;
 		frame.next_frame     = 0;
 		frame.return_address = 0;
 
-		bytes = copy_from_user_nmi(&frame, fp, sizeof(frame));
+		if (!access_ok(VERIFY_READ, fp, 8))
+			break;
+
+		bytes = __copy_from_user_nmi(&frame.next_frame, fp, 4);
+		if (bytes != 0)
+			break;
+		bytes = __copy_from_user_nmi(&frame.return_address, fp+4, 4);
 		if (bytes != 0)
 			break;
 
@@ -2294,6 +2298,7 @@ perf_callchain_user32(struct pt_regs *regs, struct perf_callchain_entry *entry)
 		perf_callchain_store(entry, cs_base + frame.return_address);
 		fp = compat_ptr(ss_base + frame.next_frame);
 	}
+	pagefault_enable();
 	return 1;
 }
 #else
@@ -2331,12 +2336,19 @@ perf_callchain_user(struct perf_callchain_entry *entry, struct pt_regs *regs)
 	if (perf_callchain_user32(regs, entry))
 		return;
 
-	while (entry->nr < PERF_MAX_STACK_DEPTH) {
+	pagefault_disable();
+	while (entry->nr < sysctl_perf_event_max_stack) {
 		unsigned long bytes;
 		frame.next_frame	     = NULL;
 		frame.return_address = 0;
 
-		bytes = copy_from_user_nmi(&frame, fp, sizeof(frame));
+		if (!access_ok(VERIFY_READ, fp, 16))
+			break;
+
+		bytes = __copy_from_user_nmi(&frame.next_frame, fp, 8);
+		if (bytes != 0)
+			break;
+		bytes = __copy_from_user_nmi(&frame.return_address, fp+8, 8);
 		if (bytes != 0)
 			break;
 
@@ -2344,8 +2356,9 @@ perf_callchain_user(struct perf_callchain_entry *entry, struct pt_regs *regs)
 			break;
 
 		perf_callchain_store(entry, frame.return_address);
-		fp = frame.next_frame;
+		fp = (void __user *)frame.next_frame;
 	}
+	pagefault_enable();
 }
 
 /*
