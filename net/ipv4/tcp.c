@@ -247,6 +247,7 @@
 
 #define pr_fmt(fmt) "TCP: " fmt
 
+#include <crypto/hash.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -266,7 +267,6 @@
 #include <linux/swap.h>
 #include <linux/cache.h>
 #include <linux/err.h>
-#include <linux/crypto.h>
 #include <linux/time.h>
 #include <linux/slab.h>
 
@@ -428,16 +428,17 @@ void tcp_init_sock(struct sock *sk)
 }
 EXPORT_SYMBOL(tcp_init_sock);
 
-static void tcp_tx_timestamp(struct sock *sk, struct sk_buff *skb)
+static void tcp_tx_timestamp(struct sock *sk, u16 tsflags, struct sk_buff *skb)
 {
-	if (sk->sk_tsflags) {
+	if (tsflags) {
 		struct skb_shared_info *shinfo = skb_shinfo(skb);
 		struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 
-		sock_tx_timestamp(sk, &shinfo->tx_flags);
-		if (shinfo->tx_flags & SKBTX_ANY_TSTAMP)
+		sock_tx_timestamp(sk, tsflags, &shinfo->tx_flags);
+		if (tsflags & SOF_TIMESTAMPING_TX_ACK)
+			tcb->txstamp_ack = 1;
+		if (tsflags & SOF_TIMESTAMPING_TX_RECORD_MASK)
 			shinfo->tskey = TCP_SKB_CB(skb)->seq + skb->len - 1;
-		tcb->txstamp_ack = !!(shinfo->tx_flags & SKBTX_ACK_TSTAMP);
 	}
 }
 
@@ -908,7 +909,8 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
 		int copy, i;
 		bool can_coalesce;
 
-		if (!tcp_send_head(sk) || (copy = size_goal - skb->len) <= 0) {
+		if (!tcp_send_head(sk) || (copy = size_goal - skb->len) <= 0 ||
+		    !tcp_skb_can_collapse_to(skb)) {
 new_segment:
 			if (!sk_stream_memory_free(sk))
 				goto wait_for_sndbuf;
@@ -959,7 +961,7 @@ new_segment:
 		offset += copy;
 		size -= copy;
 		if (!size) {
-			tcp_tx_timestamp(sk, skb);
+			tcp_tx_timestamp(sk, sk->sk_tsflags, skb);
 			goto out;
 		}
 
@@ -1079,6 +1081,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
+	struct sockcm_cookie sockc;
 	int flags, err, copied = 0;
 	int mss_now = 0, size_goal, copied_syn = 0;
 	bool sg;
@@ -1121,6 +1124,15 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		/* 'common' sending to sendq */
 	}
 
+	sockc.tsflags = sk->sk_tsflags;
+	if (msg->msg_controllen) {
+		err = sock_cmsg_send(sk, msg, &sockc);
+		if (unlikely(err)) {
+			err = -EINVAL;
+			goto out_err;
+		}
+	}
+
 	/* This should be in poll */
 	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
@@ -1146,7 +1158,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 			copy = max - skb->len;
 		}
 
-		if (copy <= 0) {
+		if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
 new_segment:
 			/* Allocate new segment. If the interface is SG,
 			 * allocate skb fitting to single page.
@@ -1239,7 +1251,9 @@ new_segment:
 
 		copied += copy;
 		if (!msg_data_left(msg)) {
-			tcp_tx_timestamp(sk, skb);
+			tcp_tx_timestamp(sk, sockc.tsflags, skb);
+			if (unlikely(flags & MSG_EOR))
+				TCP_SKB_CB(skb)->eor = 1;
 			goto out;
 		}
 
@@ -2944,17 +2958,26 @@ static bool tcp_md5sig_pool_populated = false;
 
 static void __tcp_alloc_md5sig_pool(void)
 {
+	struct crypto_ahash *hash;
 	int cpu;
 
-	for_each_possible_cpu(cpu) {
-		if (!per_cpu(tcp_md5sig_pool, cpu).md5_desc.tfm) {
-			struct crypto_hash *hash;
+	hash = crypto_alloc_ahash("md5", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(hash))
+		return;
 
-			hash = crypto_alloc_hash("md5", 0, CRYPTO_ALG_ASYNC);
-			if (IS_ERR(hash))
-				return;
-			per_cpu(tcp_md5sig_pool, cpu).md5_desc.tfm = hash;
-		}
+	for_each_possible_cpu(cpu) {
+		struct ahash_request *req;
+
+		if (per_cpu(tcp_md5sig_pool, cpu).md5_req)
+			continue;
+
+		req = ahash_request_alloc(hash, GFP_KERNEL);
+		if (!req)
+			return;
+
+		ahash_request_set_callback(req, 0, NULL, NULL);
+
+		per_cpu(tcp_md5sig_pool, cpu).md5_req = req;
 	}
 	/* before setting tcp_md5sig_pool_populated, we must commit all writes
 	 * to memory. See smp_rmb() in tcp_get_md5sig_pool()
@@ -3004,7 +3027,6 @@ int tcp_md5_hash_header(struct tcp_md5sig_pool *hp,
 {
 	struct scatterlist sg;
 	struct tcphdr hdr;
-	int err;
 
 	/* We are not allowed to change tcphdr, make a local copy */
 	memcpy(&hdr, th, sizeof(hdr));
@@ -3012,8 +3034,8 @@ int tcp_md5_hash_header(struct tcp_md5sig_pool *hp,
 
 	/* options aren't included in the hash */
 	sg_init_one(&sg, &hdr, sizeof(hdr));
-	err = crypto_hash_update(&hp->md5_desc, &sg, sizeof(hdr));
-	return err;
+	ahash_request_set_crypt(hp->md5_req, &sg, NULL, sizeof(hdr));
+	return crypto_ahash_update(hp->md5_req);
 }
 EXPORT_SYMBOL(tcp_md5_hash_header);
 
@@ -3022,7 +3044,7 @@ int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *hp,
 {
 	struct scatterlist sg;
 	const struct tcphdr *tp = tcp_hdr(skb);
-	struct hash_desc *desc = &hp->md5_desc;
+	struct ahash_request *req = hp->md5_req;
 	unsigned int i;
 	const unsigned int head_data_len = skb_headlen(skb) > header_len ?
 					   skb_headlen(skb) - header_len : 0;
@@ -3032,7 +3054,8 @@ int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *hp,
 	sg_init_table(&sg, 1);
 
 	sg_set_buf(&sg, ((u8 *) tp) + header_len, head_data_len);
-	if (crypto_hash_update(desc, &sg, head_data_len))
+	ahash_request_set_crypt(req, &sg, NULL, head_data_len);
+	if (crypto_ahash_update(req))
 		return 1;
 
 	for (i = 0; i < shi->nr_frags; ++i) {
@@ -3042,7 +3065,8 @@ int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *hp,
 
 		sg_set_page(&sg, page, skb_frag_size(f),
 			    offset_in_page(offset));
-		if (crypto_hash_update(desc, &sg, skb_frag_size(f)))
+		ahash_request_set_crypt(req, &sg, NULL, skb_frag_size(f));
+		if (crypto_ahash_update(req))
 			return 1;
 	}
 
@@ -3059,7 +3083,8 @@ int tcp_md5_hash_key(struct tcp_md5sig_pool *hp, const struct tcp_md5sig_key *ke
 	struct scatterlist sg;
 
 	sg_init_one(&sg, key->key, key->keylen);
-	return crypto_hash_update(&hp->md5_desc, &sg, key->keylen);
+	ahash_request_set_crypt(hp->md5_req, &sg, NULL, key->keylen);
+	return crypto_ahash_update(hp->md5_req);
 }
 EXPORT_SYMBOL(tcp_md5_hash_key);
 
