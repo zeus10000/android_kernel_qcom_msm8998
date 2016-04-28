@@ -102,7 +102,7 @@ fail:
 	return -ENOMEM;
 }
 
-int get_callchain_buffers(int event_max_stack)
+int get_callchain_buffers(void)
 {
 	int err = 0;
 	int count;
@@ -115,8 +115,14 @@ int get_callchain_buffers(int event_max_stack)
 		goto exit;
 	}
 
-	if (count == 1)
-		err = alloc_callchain_buffers();
+	if (count > 1) {
+		/* If the allocation failed, give up */
+		if (!callchain_cpus_entries)
+			err = -ENOMEM;
+		goto exit;
+	}
+
+	err = alloc_callchain_buffers();
 exit:
 	if (err)
 		atomic_dec(&nr_callchain_events);
@@ -166,12 +172,11 @@ perf_callchain(struct perf_event *event, struct pt_regs *regs)
 	bool user   = !event->attr.exclude_callchain_user;
 	/* Disallow cross-task user callchains. */
 	bool crosstask = event->ctx->task && event->ctx->task != current;
-	const u32 max_stack = event->attr.sample_max_stack;
 
 	if (!kernel && !user)
 		return NULL;
 
-	return get_perf_callchain(regs, 0, kernel, user, max_stack, crosstask, true);
+	return get_perf_callchain(regs, 0, kernel, user, sysctl_perf_event_max_stack, crosstask, true);
 }
 
 struct perf_callchain_entry *
@@ -227,7 +232,8 @@ exit_put:
 int perf_event_max_stack_handler(struct ctl_table *table, int write,
 				 void __user *buffer, size_t *lenp, loff_t *ppos)
 {
-	int new_value = sysctl_perf_event_max_stack, ret;
+	int *value = table->data;
+	int new_value = *value, ret;
 	struct ctl_table new_table = *table;
 
 	new_table.data = &new_value;
@@ -239,7 +245,7 @@ int perf_event_max_stack_handler(struct ctl_table *table, int write,
 	if (atomic_read(&nr_callchain_events))
 		ret = -EBUSY;
 	else
-		sysctl_perf_event_max_stack = new_value;
+		*value = new_value;
 
 	mutex_unlock(&callchain_mutex);
 
