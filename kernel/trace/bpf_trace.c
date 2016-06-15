@@ -192,18 +192,17 @@ static u64 bpf_perf_event_read(u64 r1, u64 index, u64 r3, u64 r4, u64 r5)
 {
 	struct bpf_map *map = (struct bpf_map *) (unsigned long) r1;
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	struct bpf_event_entry *ee;
 	struct perf_event *event;
-	struct file *file;
 
 	if (unlikely(index >= array->map.max_entries))
 		return -E2BIG;
 
-	file = (struct file *)array->ptrs[index];
-	if (unlikely(!file))
+	ee = READ_ONCE(array->ptrs[index]);
+	if (unlikely(!ee))
 		return -ENOENT;
 
-	event = file->private_data;
-
+	event = ee->event;
 	/* make sure event is local and doesn't have pmu::count */
 	if (event->oncpu != smp_processor_id() ||
 	    event->pmu->count)
@@ -233,8 +232,8 @@ static u64 bpf_perf_event_output(u64 r1, u64 r2, u64 flags, u64 r4, u64 size)
 	u64 index = flags & BPF_F_INDEX_MASK;
 	void *data = (void *) (long) r4;
 	struct perf_sample_data sample_data;
+	struct bpf_event_entry *ee;
 	struct perf_event *event;
-	struct file *file;
 	struct perf_raw_record raw = {
 		.size = size,
 		.data = data,
@@ -247,12 +246,11 @@ static u64 bpf_perf_event_output(u64 r1, u64 r2, u64 flags, u64 r4, u64 size)
 	if (unlikely(index >= array->map.max_entries))
 		return -E2BIG;
 
-	file = (struct file *)array->ptrs[index];
-	if (unlikely(!file))
+	ee = READ_ONCE(array->ptrs[index]);
+	if (unlikely(!ee))
 		return -ENOENT;
 
-	event = file->private_data;
-
+	event = ee->event;
 	if (unlikely(event->attr.type != PERF_TYPE_SOFTWARE ||
 		     event->attr.config != PERF_COUNT_SW_BPF_OUTPUT))
 		return -EINVAL;
@@ -349,8 +347,7 @@ static const struct bpf_func_proto *kprobe_prog_func_proto(enum bpf_func_id func
 }
 
 /* bpf+kprobe programs can access fields of 'struct pt_regs' */
-static bool kprobe_prog_is_valid_access(int off, int size, enum bpf_access_type type,
-					enum bpf_reg_type *reg_type)
+static bool kprobe_prog_is_valid_access(int off, int size, enum bpf_access_type type)
 {
 	/* check bounds */
 	if (off < 0 || off >= sizeof(struct pt_regs))
@@ -384,7 +381,7 @@ static u64 bpf_perf_event_output_tp(u64 r1, u64 r2, u64 index, u64 r4, u64 size)
 	 * from bpf program and contain a pointer to 'struct pt_regs'. Fetch it
 	 * from there and call the same bpf_perf_event_output() helper
 	 */
-	u64 ctx = *(long *)r1;
+	u64 ctx = *(long *)(uintptr_t)r1;
 
 	return bpf_perf_event_output(ctx, r2, index, r4, size);
 }
@@ -402,7 +399,7 @@ static const struct bpf_func_proto bpf_perf_event_output_proto_tp = {
 
 static u64 bpf_get_stackid_tp(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
 {
-	u64 ctx = *(long *)r1;
+	u64 ctx = *(long *)(uintptr_t)r1;
 
 	return bpf_get_stackid(ctx, r2, r3, r4, r5);
 }
@@ -428,8 +425,7 @@ static const struct bpf_func_proto *tp_prog_func_proto(enum bpf_func_id func_id)
 	}
 }
 
-static bool tp_prog_is_valid_access(int off, int size, enum bpf_access_type type,
-				    enum bpf_reg_type *reg_type)
+static bool tp_prog_is_valid_access(int off, int size, enum bpf_access_type type)
 {
 	if (off < sizeof(void *) || off >= PERF_MAX_TRACE_SIZE)
 		return false;
