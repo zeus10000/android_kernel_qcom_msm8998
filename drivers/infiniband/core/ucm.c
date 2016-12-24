@@ -46,9 +46,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 
-#include <linux/nospec.h>
-
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <rdma/ib.h>
 #include <rdma/ib_cm.h>
@@ -1106,8 +1104,11 @@ static ssize_t ib_ucm_write(struct file *filp, const char __user *buf,
 	struct ib_ucm_cmd_hdr hdr;
 	ssize_t result;
 
-	if (WARN_ON_ONCE(!ib_safe_file_access(filp)))
+	if (!ib_safe_file_access(filp)) {
+		pr_err_once("ucm_write: process %d (%s) changed security contexts after opening file descriptor, this is not allowed.\n",
+			    task_tgid_vnr(current), current->comm);
 		return -EACCES;
+	}
 
 	if (len < sizeof(hdr))
 		return -EINVAL;
@@ -1117,7 +1118,6 @@ static ssize_t ib_ucm_write(struct file *filp, const char __user *buf,
 
 	if (hdr.cmd >= ARRAY_SIZE(ucm_cmd_table))
 		return -EINVAL;
-	hdr.cmd = array_index_nospec(hdr.cmd, ARRAY_SIZE(ucm_cmd_table));
 
 	if (hdr.in + sizeof(hdr) > len)
 		return -EINVAL;
@@ -1241,7 +1241,7 @@ static int find_overflow_devnum(void)
 		ret = alloc_chrdev_region(&overflow_maj, 0, IB_UCM_MAX_DEVICES,
 					  "infiniband_cm");
 		if (ret) {
-			printk(KERN_ERR "ucm: couldn't register dynamic device number\n");
+			pr_err("ucm: couldn't register dynamic device number\n");
 			return ret;
 		}
 	}
@@ -1336,19 +1336,19 @@ static int __init ib_ucm_init(void)
 	ret = register_chrdev_region(IB_UCM_BASE_DEV, IB_UCM_MAX_DEVICES,
 				     "infiniband_cm");
 	if (ret) {
-		printk(KERN_ERR "ucm: couldn't register device number\n");
+		pr_err("ucm: couldn't register device number\n");
 		goto error1;
 	}
 
 	ret = class_create_file(&cm_class, &class_attr_abi_version.attr);
 	if (ret) {
-		printk(KERN_ERR "ucm: couldn't create abi_version attribute\n");
+		pr_err("ucm: couldn't create abi_version attribute\n");
 		goto error2;
 	}
 
 	ret = ib_register_client(&ucm_client);
 	if (ret) {
-		printk(KERN_ERR "ucm: couldn't register client\n");
+		pr_err("ucm: couldn't register client\n");
 		goto error3;
 	}
 	return 0;
