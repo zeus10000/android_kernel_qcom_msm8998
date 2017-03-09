@@ -94,12 +94,12 @@ static int tcp_v4_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
 struct inet_hashinfo tcp_hashinfo;
 EXPORT_SYMBOL(tcp_hashinfo);
 
-static u32 tcp_v4_init_sequence(const struct sk_buff *skb, u32 *tsoff)
+static u32 tcp_v4_init_seq_and_tsoff(const struct sk_buff *skb, u32 *tsoff)
 {
-	return secure_tcp_sequence_number(ip_hdr(skb)->daddr,
-					  ip_hdr(skb)->saddr,
-					  tcp_hdr(skb)->dest,
-					  tcp_hdr(skb)->source, tsoff);
+	return secure_tcp_seq_and_tsoff(ip_hdr(skb)->daddr,
+					ip_hdr(skb)->saddr,
+					tcp_hdr(skb)->dest,
+					tcp_hdr(skb)->source, tsoff);
 }
 
 int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
@@ -145,6 +145,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	struct flowi4 *fl4;
 	struct rtable *rt;
 	int err;
+	u32 seq;
 	struct ip_options_rcu *inet_opt;
 	struct inet_timewait_death_row *tcp_death_row = &sock_net(sk)->ipv4.tcp_death_row;
 
@@ -234,12 +235,15 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	sk_setup_caps(sk, &rt->dst);
 	rt = NULL;
 
-	if (!tp->write_seq && likely(!tp->repair))
-		tp->write_seq = secure_tcp_sequence_number(inet->inet_saddr,
-							   inet->inet_daddr,
-							   inet->inet_sport,
-							   usin->sin_port,
-							   &tp->tsoffset);
+	if (likely(!tp->repair)) {
+		seq = secure_tcp_seq_and_tsoff(inet->inet_saddr,
+					       inet->inet_daddr,
+					       inet->inet_sport,
+					       usin->sin_port,
+					       &tp->tsoffset);
+		if (!tp->write_seq)
+			tp->write_seq = seq;
+	}
 
 	inet->inet_id = tp->write_seq ^ jiffies;
 
@@ -448,7 +452,7 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
 			if (!sock_owned_by_user(sk)) {
 				tcp_v4_mtu_reduced(sk);
 			} else {
-				if (!test_and_set_bit(TCP_MTU_REDUCED_DEFERRED, &tp->tsq_flags))
+				if (!test_and_set_bit(TCP_MTU_REDUCED_DEFERRED, &sk->sk_tsq_flags))
 					sock_hold(sk);
 			}
 			goto out;
@@ -1245,7 +1249,7 @@ static const struct tcp_request_sock_ops tcp_request_sock_ipv4_ops = {
 	.cookie_init_seq =	cookie_v4_init_sequence,
 #endif
 	.route_req	=	tcp_v4_route_req,
-	.init_seq	=	tcp_v4_init_sequence,
+	.init_seq_tsoff	=	tcp_v4_init_seq_and_tsoff,
 	.send_synack	=	tcp_v4_send_synack,
 };
 
@@ -1324,10 +1328,7 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	tcp_ca_openreq_child(newsk, dst);
 
 	tcp_sync_mss(newsk, dst_mtu(dst));
-	newtp->advmss = dst_metric_advmss(dst);
-	if (tcp_sk(sk)->rx_opt.user_mss &&
-	    tcp_sk(sk)->rx_opt.user_mss < newtp->advmss)
-		newtp->advmss = tcp_sk(sk)->rx_opt.user_mss;
+	newtp->advmss = tcp_mss_clamp(tcp_sk(sk), dst_metric_advmss(dst));
 
 	tcp_initialize_rcv_mss(newsk);
 
@@ -1561,8 +1562,7 @@ bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb)
 	 * It has been noticed pure SACK packets were sometimes dropped
 	 * (if cooked by drivers without copybreak feature).
 	 */
-	if (!skb->data_len)
-		skb->truesize = SKB_TRUESIZE(skb_end_offset(skb));
+	skb_condense(skb);
 
 	if (unlikely(sk_add_backlog(sk, skb, limit))) {
 		bh_unlock_sock(sk);
@@ -1822,7 +1822,6 @@ const struct inet_connection_sock_af_ops ipv4_specific = {
 	.getsockopt	   = ip_getsockopt,
 	.addr2sockaddr	   = inet_csk_addr2sockaddr,
 	.sockaddr_len	   = sizeof(struct sockaddr_in),
-	.bind_conflict	   = inet_csk_bind_conflict,
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt = compat_ip_setsockopt,
 	.compat_getsockopt = compat_ip_getsockopt,
@@ -1893,9 +1892,7 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	tcp_free_fastopen_req(tp);
 	tcp_saved_syn_free(tp);
 
-	local_bh_disable();
 	sk_sockets_allocated_dec(sk);
-	local_bh_enable();
 }
 EXPORT_SYMBOL(tcp_v4_destroy_sock);
 
@@ -2381,6 +2378,7 @@ struct proto tcp_prot = {
 	.shutdown		= tcp_shutdown,
 	.setsockopt		= tcp_setsockopt,
 	.getsockopt		= tcp_getsockopt,
+	.keepalive		= tcp_set_keepalive,
 	.recvmsg		= tcp_recvmsg,
 	.sendmsg		= tcp_sendmsg,
 	.sendpage		= tcp_sendpage,
@@ -2424,7 +2422,7 @@ static void __net_exit tcp_sk_exit(struct net *net)
 
 static int __net_init tcp_sk_init(struct net *net)
 {
-	int res, cpu;
+	int res, cpu, cnt;
 
 	net->ipv4.tcp_sk = alloc_percpu(struct sock *);
 	if (!net->ipv4.tcp_sk)
@@ -2463,9 +2461,12 @@ static int __net_init tcp_sk_init(struct net *net)
 	net->ipv4.sysctl_tcp_notsent_lowat = UINT_MAX;
 	net->ipv4.sysctl_tcp_tw_reuse = 0;
 
+	cnt = tcp_hashinfo.ehash_mask + 1;
 	net->ipv4.tcp_death_row.sysctl_tw_recycle = 0;
-	net->ipv4.tcp_death_row.sysctl_max_tw_buckets = (tcp_hashinfo.ehash_mask + 1) / 2;
+	net->ipv4.tcp_death_row.sysctl_max_tw_buckets = (cnt + 1) / 2;
 	net->ipv4.tcp_death_row.hashinfo = &tcp_hashinfo;
+
+	net->ipv4.sysctl_max_syn_backlog = max(128, cnt / 256);
 
 	return 0;
 fail:
