@@ -31,6 +31,7 @@
 #include <asm/debug-monitors.h>
 #include <asm/fixmap.h>
 #include <asm/insn.h>
+#include <asm/kprobes.h>
 
 #define AARCH64_INSN_SF_BIT	BIT(31)
 #define AARCH64_INSN_N_BIT	BIT(22)
@@ -93,10 +94,9 @@ static void __kprobes *patch_map(void *addr, int fixmap)
 	bool module = !core_kernel_text(uintaddr);
 	struct page *page;
 
-	if (module && IS_ENABLED(CONFIG_DEBUG_SET_MODULE_RONX))
+	if (module && IS_ENABLED(CONFIG_STRICT_MODULE_RWX))
 		page = vmalloc_to_page(addr);
-	else if (!module && (IS_ENABLED(CONFIG_DEBUG_RODATA)
-			       	|| IS_ENABLED(CONFIG_KERNEL_TEXT_RDONLY)))
+	else if (!module)
 		page = phys_to_page(__pa_symbol(addr));
 	else
 		return addr;
@@ -416,6 +416,35 @@ u32 __kprobes aarch64_insn_encode_immediate(enum aarch64_insn_imm_type type,
 	insn |= (imm & mask) << shift;
 
 	return insn;
+}
+
+u32 aarch64_insn_decode_register(enum aarch64_insn_register_type type,
+					u32 insn)
+{
+	int shift;
+
+	switch (type) {
+	case AARCH64_INSN_REGTYPE_RT:
+	case AARCH64_INSN_REGTYPE_RD:
+		shift = 0;
+		break;
+	case AARCH64_INSN_REGTYPE_RN:
+		shift = 5;
+		break;
+	case AARCH64_INSN_REGTYPE_RT2:
+	case AARCH64_INSN_REGTYPE_RA:
+		shift = 10;
+		break;
+	case AARCH64_INSN_REGTYPE_RM:
+		shift = 16;
+		break;
+	default:
+		pr_err("%s: unknown register type encoding %d\n", __func__,
+		       type);
+		return 0;
+	}
+
+	return (insn >> shift) & GENMASK(4, 0);
 }
 
 static u32 aarch64_insn_encode_register(enum aarch64_insn_register_type type,
@@ -762,46 +791,6 @@ u32 aarch64_insn_gen_load_store_ex(enum aarch64_insn_register reg,
 
 	return aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RS, insn,
 					    state);
-}
-
-u32 aarch64_insn_gen_ldadd(enum aarch64_insn_register result,
-			   enum aarch64_insn_register address,
-			   enum aarch64_insn_register value,
-			   enum aarch64_insn_size_type size)
-{
-	u32 insn = aarch64_insn_get_ldadd_value();
-
-	switch (size) {
-	case AARCH64_INSN_SIZE_32:
-	case AARCH64_INSN_SIZE_64:
-		break;
-	default:
-		pr_err("%s: unimplemented size encoding %d\n", __func__, size);
-		return AARCH64_BREAK_FAULT;
-	}
-
-	insn = aarch64_insn_encode_ldst_size(size, insn);
-
-	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RT, insn,
-					    result);
-
-	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RN, insn,
-					    address);
-
-	return aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RS, insn,
-					    value);
-}
-
-u32 aarch64_insn_gen_stadd(enum aarch64_insn_register address,
-			   enum aarch64_insn_register value,
-			   enum aarch64_insn_size_type size)
-{
-	/*
-	 * STADD is simply encoded as an alias for LDADD with XZR as
-	 * the destination register.
-	 */
-	return aarch64_insn_gen_ldadd(AARCH64_INSN_REG_ZR, address,
-				      value, size);
 }
 
 static u32 aarch64_insn_encode_prfm_imm(enum aarch64_insn_prfm_type type,
@@ -1346,6 +1335,19 @@ u32 aarch64_set_branch_offset(u32 insn, s32 offset)
 
 	/* Unhandled instruction */
 	BUG();
+}
+
+s32 aarch64_insn_adrp_get_offset(u32 insn)
+{
+	BUG_ON(!aarch64_insn_is_adrp(insn));
+	return aarch64_insn_decode_immediate(AARCH64_INSN_IMM_ADR, insn) << 12;
+}
+
+u32 aarch64_insn_adrp_set_offset(u32 insn, s32 offset)
+{
+	BUG_ON(!aarch64_insn_is_adrp(insn));
+	return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_ADR, insn,
+						offset >> 12);
 }
 
 /*
