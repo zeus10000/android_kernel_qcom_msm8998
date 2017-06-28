@@ -36,7 +36,6 @@ int bpf_jit_enable __read_mostly;
 #define TMP_REG_1 (MAX_BPF_JIT_REG + 0)
 #define TMP_REG_2 (MAX_BPF_JIT_REG + 1)
 #define TCALL_CNT (MAX_BPF_JIT_REG + 2)
-#define TMP_REG_3 (MAX_BPF_JIT_REG + 3)
 
 /* Map BPF registers to A64 registers */
 static const int bpf2a64[] = {
@@ -58,7 +57,6 @@ static const int bpf2a64[] = {
 	/* temporary registers for internal BPF JIT */
 	[TMP_REG_1] = A64_R(10),
 	[TMP_REG_2] = A64_R(11),
-	[TMP_REG_3] = A64_R(12),
 	/* tail_call_cnt */
 	[TCALL_CNT] = A64_R(26),
 	/* temporary register for blinding constants */
@@ -70,8 +68,7 @@ struct jit_ctx {
 	int idx;
 	int epilogue_offset;
 	int *offset;
-	u32 *image;
-	u32 stack_size;
+	__le32 *image;
 };
 
 static inline void emit(const u32 insn, struct jit_ctx *ctx)
@@ -131,7 +128,7 @@ static inline int bpf2a64_offset(int bpf_to, int bpf_from,
 
 static void jit_fill_hole(void *area, unsigned int size)
 {
-	u32 *ptr;
+	__le32 *ptr;
 	/* We are guaranteed to have aligned memory. */
 	for (ptr = area; size >= sizeof(u32); size -= sizeof(u32))
 		*ptr++ = cpu_to_le32(AARCH64_BREAK_FAULT);
@@ -148,11 +145,16 @@ static inline int epilogue_offset(const struct jit_ctx *ctx)
 /* Stack must be multiples of 16B */
 #define STACK_ALIGN(sz) (((sz) + 15) & ~15)
 
+#define _STACK_SIZE \
+	(MAX_BPF_STACK \
+	 + 4 /* extra for skb_copy_bits buffer */)
+
+#define STACK_SIZE STACK_ALIGN(_STACK_SIZE)
+
 #define PROLOGUE_OFFSET 8
 
 static int build_prologue(struct jit_ctx *ctx)
 {
-	const struct bpf_prog *prog = ctx->prog;
 	const u8 r6 = bpf2a64[BPF_REG_6];
 	const u8 r7 = bpf2a64[BPF_REG_7];
 	const u8 r8 = bpf2a64[BPF_REG_8];
@@ -174,9 +176,9 @@ static int build_prologue(struct jit_ctx *ctx)
 	 *                        |     |
 	 *                        | ... | BPF prog stack
 	 *                        |     |
-	 *                        +-----+ <= (BPF_FP - prog->aux->stack_depth)
+	 *                        +-----+ <= (BPF_FP - MAX_BPF_STACK)
 	 *                        |RSVD | JIT scratchpad
-	 * current A64_SP =>      +-----+ <= (BPF_FP - ctx->stack_size)
+	 * current A64_SP =>      +-----+ <= (BPF_FP - STACK_SIZE)
 	 *                        |     |
 	 *                        | ... | Function call stack
 	 *                        |     |
@@ -200,12 +202,8 @@ static int build_prologue(struct jit_ctx *ctx)
 	/* Initialize tail_call_cnt */
 	emit(A64_MOVZ(1, tcc, 0, 0), ctx);
 
-	/* 4 byte extra for skb_copy_bits buffer */
-	ctx->stack_size = prog->aux->stack_depth + 4;
-	ctx->stack_size = STACK_ALIGN(ctx->stack_size);
-
 	/* Set up function call stack */
-	emit(A64_SUB_I(1, A64_SP, A64_SP, ctx->stack_size), ctx);
+	emit(A64_SUB_I(1, A64_SP, A64_SP, STACK_SIZE), ctx);
 
 	cur_offset = ctx->idx - idx0;
 	if (cur_offset != PROLOGUE_OFFSET) {
@@ -290,7 +288,7 @@ static void build_epilogue(struct jit_ctx *ctx)
 	const u8 fp = bpf2a64[BPF_REG_FP];
 
 	/* We're done with BPF stack */
-	emit(A64_ADD_I(1, A64_SP, A64_SP, ctx->stack_size), ctx);
+	emit(A64_ADD_I(1, A64_SP, A64_SP, STACK_SIZE), ctx);
 
 	/* Restore fs (x25) and x26 */
 	emit(A64_POP(fp, A64_R(26), A64_SP), ctx);
@@ -321,7 +319,6 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx)
 	const u8 src = bpf2a64[insn->src_reg];
 	const u8 tmp = bpf2a64[TMP_REG_1];
 	const u8 tmp2 = bpf2a64[TMP_REG_2];
-	const u8 tmp3 = bpf2a64[TMP_REG_3];
 	const s16 off = insn->off;
 	const s32 imm = insn->imm;
 	const int i = insn - ctx->prog->insnsi;
@@ -589,7 +586,7 @@ emit_cond_jmp:
 		break;
 	}
 	/* tail call */
-	case BPF_JMP | BPF_TAIL_CALL:
+	case BPF_JMP | BPF_CALL | BPF_X:
 		if (emit_bpf_tail_call(ctx))
 			return -EFAULT;
 		break;
@@ -692,10 +689,10 @@ emit_cond_jmp:
 		emit(A64_PRFM(tmp, PST, L1, STRM), ctx);
 		emit(A64_LDXR(isdw, tmp2, tmp), ctx);
 		emit(A64_ADD(isdw, tmp2, tmp2, src), ctx);
-		emit(A64_STXR(isdw, tmp2, tmp, tmp3), ctx);
+		emit(A64_STXR(isdw, tmp2, tmp, tmp2), ctx);
 		jmp_offset = -3;
 		check_imm19(jmp_offset);
-		emit(A64_CBNZ(0, tmp3, jmp_offset), ctx);
+		emit(A64_CBNZ(0, tmp2, jmp_offset), ctx);
 		break;
 
 	/* R0 = ntohx(*(size *)(((struct sk_buff *)R6)->data + imm)) */
@@ -735,7 +732,7 @@ emit_cond_jmp:
 			return -EINVAL;
 		}
 		emit_a64_mov_i64(r3, size, ctx);
-		emit(A64_SUB_I(1, r4, fp, ctx->stack_size), ctx);
+		emit(A64_SUB_I(1, r4, fp, STACK_SIZE), ctx);
 		emit_a64_mov_i64(r5, (unsigned long)bpf_load_pointer, ctx);
 		emit(A64_BLR(r5), ctx);
 		emit(A64_MOV(1, r0, A64_R(0)), ctx);
@@ -874,7 +871,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	/* 2. Now, the actual pass. */
 
-	ctx.image = (u32 *)image_ptr;
+	ctx.image = (__le32 *)image_ptr;
 	ctx.idx = 0;
 
 	build_prologue(&ctx);
@@ -903,7 +900,6 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	bpf_jit_binary_lock_ro(header);
 	prog->bpf_func = (void *)ctx.image;
 	prog->jited = 1;
-	prog->jited_len = image_size;
 
 out_off:
 	kfree(ctx.offset);
