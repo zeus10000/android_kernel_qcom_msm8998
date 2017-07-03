@@ -417,7 +417,7 @@ out:
 }
 EXPORT_SYMBOL(bt_sock_stream_recvmsg);
 
-static inline unsigned int bt_accept_poll(struct sock *parent)
+static inline __poll_t bt_accept_poll(struct sock *parent)
 {
 	struct list_head *p, *n;
 	struct sock *sk;
@@ -433,11 +433,11 @@ static inline unsigned int bt_accept_poll(struct sock *parent)
 	return 0;
 }
 
-unsigned int bt_sock_poll(struct file *file, struct socket *sock,
+__poll_t bt_sock_poll(struct file *file, struct socket *sock,
 			  poll_table *wait)
 {
 	struct sock *sk = sock->sk;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	BT_DBG("sock %pK, sk %pK", sock, sk);
 
