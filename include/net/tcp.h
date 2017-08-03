@@ -1895,7 +1895,8 @@ static inline s64 tcp_rto_delta_us(const struct sock *sk)
 /*
  * Save and compile IPv4 options, return a pointer to it
  */
-static inline struct ip_options_rcu *tcp_v4_save_options(struct sk_buff *skb)
+static inline struct ip_options_rcu *tcp_v4_save_options(struct net *net,
+							 struct sk_buff *skb)
 {
 	const struct ip_options *opt = &TCP_SKB_CB(skb)->header.h4.opt;
 	struct ip_options_rcu *dopt = NULL;
@@ -1904,7 +1905,7 @@ static inline struct ip_options_rcu *tcp_v4_save_options(struct sk_buff *skb)
 		int opt_size = sizeof(*dopt) + opt->optlen;
 
 		dopt = kmalloc(opt_size, GFP_ATOMIC);
-		if (dopt && __ip_options_echo(&dopt->opt, skb, opt)) {
+		if (dopt && __ip_options_echo(net, &dopt->opt, skb, opt)) {
 			kfree(dopt);
 			dopt = NULL;
 		}
