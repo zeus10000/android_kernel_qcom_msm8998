@@ -40,6 +40,7 @@
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <net/ip6_checksum.h>
+#include "qede_ptp.h"
 
 #include <linux/qed/qed_if.h>
 #include "qede.h"
@@ -86,7 +87,8 @@ int qede_alloc_rx_buffer(struct qede_rx_queue *rxq, bool allow_lazy)
 	rx_bd = (struct eth_rx_bd *)qed_chain_produce(&rxq->rx_bd_ring);
 	WARN_ON(!rx_bd);
 	rx_bd->addr.hi = cpu_to_le32(upper_32_bits(mapping));
-	rx_bd->addr.lo = cpu_to_le32(lower_32_bits(mapping));
+	rx_bd->addr.lo = cpu_to_le32(lower_32_bits(mapping) +
+				     rxq->rx_headroom);
 
 	rxq->sw_rx_prod++;
 	rxq->filled_buffers++;
@@ -97,7 +99,7 @@ int qede_alloc_rx_buffer(struct qede_rx_queue *rxq, bool allow_lazy)
 /* Unmap the data and free skb */
 int qede_free_tx_pkt(struct qede_dev *edev, struct qede_tx_queue *txq, int *len)
 {
-	u16 idx = txq->sw_tx_cons & NUM_TX_BDS_MAX;
+	u16 idx = txq->sw_tx_cons;
 	struct sk_buff *skb = txq->sw_tx_ring.skbs[idx].skb;
 	struct eth_tx_1st_bd *first_bd;
 	struct eth_tx_bd *tx_data_bd;
@@ -154,7 +156,7 @@ static void qede_free_failed_tx_pkt(struct qede_tx_queue *txq,
 				    struct eth_tx_1st_bd *first_bd,
 				    int nbd, bool data_split)
 {
-	u16 idx = txq->sw_tx_prod & NUM_TX_BDS_MAX;
+	u16 idx = txq->sw_tx_prod;
 	struct sk_buff *skb = txq->sw_tx_ring.skbs[idx].skb;
 	struct eth_tx_bd *tx_data_bd;
 	int i, split_bd_len = 0;
@@ -331,8 +333,9 @@ static int qede_xdp_xmit(struct qede_dev *edev, struct qede_fastpath *fp,
 			 struct sw_rx_data *metadata, u16 padding, u16 length)
 {
 	struct qede_tx_queue *txq = fp->xdp_tx;
-	u16 idx = txq->sw_tx_prod & NUM_TX_BDS_MAX;
 	struct eth_tx_1st_bd *first_bd;
+	u16 idx = txq->sw_tx_prod;
+	u16 val;
 
 	if (!qed_chain_get_elem_left(&txq->tx_pbl)) {
 		txq->stopped_cnt++;
@@ -344,9 +347,11 @@ static int qede_xdp_xmit(struct qede_dev *edev, struct qede_fastpath *fp,
 	memset(first_bd, 0, sizeof(*first_bd));
 	first_bd->data.bd_flags.bitfields =
 	    BIT(ETH_TX_1ST_BD_FLAGS_START_BD_SHIFT);
-	first_bd->data.bitfields |=
-	    (length & ETH_TX_DATA_1ST_BD_PKT_LEN_MASK) <<
-	    ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT;
+
+	val = (length & ETH_TX_DATA_1ST_BD_PKT_LEN_MASK) <<
+	       ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT;
+
+	first_bd->data.bitfields |= cpu_to_le16(val);
 	first_bd->data.nbds = 1;
 
 	/* We can safely ignore the offset, as it's 0 for XDP */
@@ -359,8 +364,9 @@ static int qede_xdp_xmit(struct qede_dev *edev, struct qede_fastpath *fp,
 				   metadata->mapping + padding,
 				   length, PCI_DMA_TODEVICE);
 
-	txq->sw_tx_ring.pages[idx] = metadata->data;
-	txq->sw_tx_prod++;
+	txq->sw_tx_ring.xdp[idx].page = metadata->data;
+	txq->sw_tx_ring.xdp[idx].mapping = metadata->mapping;
+	txq->sw_tx_prod = (txq->sw_tx_prod + 1) % txq->num_tx_buffers;
 
 	/* Mark the fastpath for future XDP doorbell */
 	fp->xdp_xmit = 1;
@@ -383,21 +389,21 @@ int qede_txq_has_work(struct qede_tx_queue *txq)
 
 static void qede_xdp_tx_int(struct qede_dev *edev, struct qede_tx_queue *txq)
 {
-	struct eth_tx_1st_bd *bd;
-	u16 hw_bd_cons;
+	u16 hw_bd_cons, idx;
 
 	hw_bd_cons = le16_to_cpu(*txq->hw_cons_ptr);
 	barrier();
 
 	while (hw_bd_cons != qed_chain_get_cons_idx(&txq->tx_pbl)) {
-		bd = (struct eth_tx_1st_bd *)qed_chain_consume(&txq->tx_pbl);
+		qed_chain_consume(&txq->tx_pbl);
+		idx = txq->sw_tx_cons;
 
-		dma_unmap_single(&edev->pdev->dev, BD_UNMAP_ADDR(bd),
-				 PAGE_SIZE, DMA_BIDIRECTIONAL);
-		__free_page(txq->sw_tx_ring.pages[txq->sw_tx_cons &
-						  NUM_TX_BDS_MAX]);
+		dma_unmap_page(&edev->pdev->dev,
+			       txq->sw_tx_ring.xdp[idx].mapping,
+			       PAGE_SIZE, DMA_BIDIRECTIONAL);
+		__free_page(txq->sw_tx_ring.xdp[idx].page);
 
-		txq->sw_tx_cons++;
+		txq->sw_tx_cons = (txq->sw_tx_cons + 1) % txq->num_tx_buffers;
 		txq->xmit_pkts++;
 	}
 }
@@ -427,7 +433,7 @@ static int qede_tx_int(struct qede_dev *edev, struct qede_tx_queue *txq)
 
 		bytes_compl += len;
 		pkts_compl++;
-		txq->sw_tx_cons++;
+		txq->sw_tx_cons = (txq->sw_tx_cons + 1) % txq->num_tx_buffers;
 		txq->xmit_pkts++;
 	}
 
@@ -507,7 +513,8 @@ static inline void qede_reuse_page(struct qede_rx_queue *rxq,
 	new_mapping = curr_prod->mapping + curr_prod->page_offset;
 
 	rx_bd_prod->addr.hi = cpu_to_le32(upper_32_bits(new_mapping));
-	rx_bd_prod->addr.lo = cpu_to_le32(lower_32_bits(new_mapping));
+	rx_bd_prod->addr.lo = cpu_to_le32(lower_32_bits(new_mapping) +
+					  rxq->rx_headroom);
 
 	rxq->sw_rx_prod++;
 	curr_cons->data = NULL;
@@ -623,7 +630,6 @@ static inline void qede_skb_receive(struct qede_dev *edev,
 		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan_tag);
 
 	napi_gro_receive(&fp->napi, skb);
-	rxq->rcv_pkts++;
 }
 
 static void qede_set_gro_params(struct qede_dev *edev,
@@ -883,9 +889,9 @@ static inline void qede_tpa_cont(struct qede_dev *edev,
 		       "Strange - TPA cont with more than a single len_list entry\n");
 }
 
-static void qede_tpa_end(struct qede_dev *edev,
-			 struct qede_fastpath *fp,
-			 struct eth_fast_path_rx_tpa_end_cqe *cqe)
+static int qede_tpa_end(struct qede_dev *edev,
+			struct qede_fastpath *fp,
+			struct eth_fast_path_rx_tpa_end_cqe *cqe)
 {
 	struct qede_rx_queue *rxq = fp->rxq;
 	struct qede_agg_info *tpa_info;
@@ -933,11 +939,12 @@ static void qede_tpa_end(struct qede_dev *edev,
 
 	tpa_info->state = QEDE_AGG_STATE_NONE;
 
-	return;
+	return 1;
 err:
 	tpa_info->state = QEDE_AGG_STATE_NONE;
 	dev_kfree_skb_any(tpa_info->skb);
 	tpa_info->skb = NULL;
+	return 0;
 }
 
 static u8 qede_check_notunn_csum(u16 flag)
@@ -989,14 +996,16 @@ static bool qede_rx_xdp(struct qede_dev *edev,
 			struct qede_rx_queue *rxq,
 			struct bpf_prog *prog,
 			struct sw_rx_data *bd,
-			struct eth_fast_path_rx_reg_cqe *cqe)
+			struct eth_fast_path_rx_reg_cqe *cqe,
+			u16 *data_offset, u16 *len)
 {
-	u16 len = le16_to_cpu(cqe->len_on_first_bd);
 	struct xdp_buff xdp;
 	enum xdp_action act;
 
-	xdp.data = page_address(bd->data) + cqe->placement_offset;
-	xdp.data_end = xdp.data + len;
+	xdp.data_hard_start = page_address(bd->data);
+	xdp.data = xdp.data_hard_start + *data_offset;
+	xdp_set_data_meta_invalid(&xdp);
+	xdp.data_end = xdp.data + *len;
 
 	/* Queues always have a full reset currently, so for the time
 	 * being until there's atomic program replace just mark read
@@ -1005,6 +1014,10 @@ static bool qede_rx_xdp(struct qede_dev *edev,
 	rcu_read_lock();
 	act = bpf_prog_run_xdp(prog, &xdp);
 	rcu_read_unlock();
+
+	/* Recalculate, as XDP might have changed the headers */
+	*data_offset = xdp.data - xdp.data_hard_start;
+	*len = xdp.data_end - xdp.data;
 
 	if (act == XDP_PASS)
 		return true;
@@ -1024,7 +1037,7 @@ static bool qede_rx_xdp(struct qede_dev *edev,
 		/* Now if there's a transmission problem, we'd still have to
 		 * throw current buffer, as replacement was already allocated.
 		 */
-		if (qede_xdp_xmit(edev, fp, bd, cqe->placement_offset, len)) {
+		if (qede_xdp_xmit(edev, fp, bd, *data_offset, *len)) {
 			dma_unmap_page(rxq->dev, bd->mapping,
 				       PAGE_SIZE, DMA_BIDIRECTIONAL);
 			__free_page(bd->data);
@@ -1051,7 +1064,7 @@ static struct sk_buff *qede_rx_allocate_skb(struct qede_dev *edev,
 					    struct sw_rx_data *bd, u16 len,
 					    u16 pad)
 {
-	unsigned int offset = bd->page_offset;
+	unsigned int offset = bd->page_offset + pad;
 	struct skb_frag_struct *frag;
 	struct page *page = bd->data;
 	unsigned int pull_len;
@@ -1067,8 +1080,7 @@ static struct sk_buff *qede_rx_allocate_skb(struct qede_dev *edev,
 	 * re-use the already allcoated & mapped memory.
 	 */
 	if (len + pad <= edev->rx_copybreak) {
-		memcpy(skb_put(skb, len),
-		       page_address(page) + pad + offset, len);
+		skb_put_data(skb, page_address(page) + offset, len);
 		qede_reuse_page(rxq, bd);
 		goto out;
 	}
@@ -1076,7 +1088,7 @@ static struct sk_buff *qede_rx_allocate_skb(struct qede_dev *edev,
 	frag = &skb_shinfo(skb)->frags[0];
 
 	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
-			page, pad + offset, len, rxq->rx_buf_seg_size);
+			page, offset, len, rxq->rx_buf_seg_size);
 
 	va = skb_frag_address(frag);
 	pull_len = eth_get_headlen(va, QEDE_RX_HDR_SIZE);
@@ -1177,8 +1189,7 @@ static int qede_rx_process_tpa_cqe(struct qede_dev *edev,
 		qede_tpa_cont(edev, rxq, &cqe->fast_path_tpa_cont);
 		return 0;
 	case ETH_RX_CQE_TYPE_TPA_END:
-		qede_tpa_end(edev, fp, &cqe->fast_path_tpa_end);
-		return 1;
+		return qede_tpa_end(edev, fp, &cqe->fast_path_tpa_end);
 	default:
 		return 0;
 	}
@@ -1223,12 +1234,13 @@ static int qede_rx_process_cqe(struct qede_dev *edev,
 
 	fp_cqe = &cqe->fast_path_regular;
 	len = le16_to_cpu(fp_cqe->len_on_first_bd);
-	pad = fp_cqe->placement_offset;
+	pad = fp_cqe->placement_offset + rxq->rx_headroom;
 
 	/* Run eBPF program if one is attached */
 	if (xdp_prog)
-		if (!qede_rx_xdp(edev, fp, rxq, xdp_prog, bd, fp_cqe))
-			return 1;
+		if (!qede_rx_xdp(edev, fp, rxq, xdp_prog, bd, fp_cqe,
+				 &pad, &len))
+			return 0;
 
 	/* If this is an error packet then drop it */
 	flags = cqe->fast_path_regular.pars_flags.flags;
@@ -1277,6 +1289,7 @@ static int qede_rx_process_cqe(struct qede_dev *edev,
 	qede_get_rxhash(skb, fp_cqe->bitfields, fp_cqe->rss_hash);
 	qede_set_skb_csum(skb, csum_flag);
 	skb_record_rx_queue(skb, rxq->rxq_id);
+	qede_ptp_record_rx_ts(edev, cqe, skb);
 
 	/* SKB is prepared - pass it to stack */
 	qede_skb_receive(edev, fp, rxq, skb, le16_to_cpu(fp_cqe->vlan_tag));
@@ -1288,8 +1301,8 @@ static int qede_rx_int(struct qede_fastpath *fp, int budget)
 {
 	struct qede_rx_queue *rxq = fp->rxq;
 	struct qede_dev *edev = fp->edev;
+	int work_done = 0, rcv_pkts = 0;
 	u16 hw_comp_cons, sw_comp_cons;
-	int work_done = 0;
 
 	hw_comp_cons = le16_to_cpu(*rxq->hw_cons_ptr);
 	sw_comp_cons = qed_chain_get_cons_idx(&rxq->rx_comp_ring);
@@ -1303,11 +1316,13 @@ static int qede_rx_int(struct qede_fastpath *fp, int budget)
 
 	/* Loop to complete all indicated BDs */
 	while ((sw_comp_cons != hw_comp_cons) && (work_done < budget)) {
-		qede_rx_process_cqe(edev, fp, rxq);
+		rcv_pkts += qede_rx_process_cqe(edev, fp, rxq);
 		qed_chain_recycle_consumed(&rxq->rx_comp_ring);
 		sw_comp_cons = qed_chain_get_cons_idx(&rxq->rx_comp_ring);
 		work_done++;
 	}
+
+	rxq->rcv_pkts += rcv_pkts;
 
 	/* Allocate replacement buffers */
 	while (rxq->num_rx_buffers - rxq->filled_buffers)
@@ -1372,7 +1387,7 @@ int qede_poll(struct napi_struct *napi, int budget)
 			qede_rx_int(fp, budget) : 0;
 	if (rx_work_done < budget) {
 		if (!qede_poll_is_more_work(fp)) {
-			napi_complete(napi);
+			napi_complete_done(napi, rx_work_done);
 
 			/* Update and reenable interrupts */
 			qed_sb_ack(fp->sb_info, IGU_INT_ENABLE, 1);
@@ -1412,7 +1427,7 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	struct eth_tx_2nd_bd *second_bd = NULL;
 	struct eth_tx_3rd_bd *third_bd = NULL;
 	struct eth_tx_bd *tx_data_bd = NULL;
-	u16 txq_index;
+	u16 txq_index, val = 0;
 	u8 nbd = 0;
 	dma_addr_t mapping;
 	int rc, frag_idx = 0, ipv6_ext = 0;
@@ -1443,13 +1458,16 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 #endif
 
 	/* Fill the entry in the SW ring and the BDs in the FW ring */
-	idx = txq->sw_tx_prod & NUM_TX_BDS_MAX;
+	idx = txq->sw_tx_prod;
 	txq->sw_tx_ring.skbs[idx].skb = skb;
 	first_bd = (struct eth_tx_1st_bd *)
 		   qed_chain_produce(&txq->tx_pbl);
 	memset(first_bd, 0, sizeof(*first_bd));
 	first_bd->data.bd_flags.bitfields =
 		1 << ETH_TX_1ST_BD_FLAGS_START_BD_SHIFT;
+
+	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
+		qede_ptp_tx_ts(edev, skb);
 
 	/* Map skb linear data for DMA and set in the first BD */
 	mapping = dma_map_single(txq->dev, skb->data,
@@ -1498,8 +1516,8 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		if (xmit_type & XMIT_ENC) {
 			first_bd->data.bd_flags.bitfields |=
 				1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
-			first_bd->data.bitfields |=
-			    1 << ETH_TX_DATA_1ST_BD_TUNN_FLAG_SHIFT;
+
+			val |= (1 << ETH_TX_DATA_1ST_BD_TUNN_FLAG_SHIFT);
 		}
 
 		/* Legacy FW had flipped behavior in regard to this bit -
@@ -1507,8 +1525,7 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		 * packets when it didn't need to.
 		 */
 		if (unlikely(txq->is_legacy))
-			first_bd->data.bitfields ^=
-			    1 << ETH_TX_DATA_1ST_BD_TUNN_FLAG_SHIFT;
+			val ^= (1 << ETH_TX_DATA_1ST_BD_TUNN_FLAG_SHIFT);
 
 		/* If the packet is IPv6 with extension header, indicate that
 		 * to FW and pass few params, since the device cracker doesn't
@@ -1572,10 +1589,11 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 			data_split = true;
 		}
 	} else {
-		first_bd->data.bitfields |=
-		    (skb->len & ETH_TX_DATA_1ST_BD_PKT_LEN_MASK) <<
-		    ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT;
+		val |= ((skb->len & ETH_TX_DATA_1ST_BD_PKT_LEN_MASK) <<
+			 ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT);
 	}
+
+	first_bd->data.bitfields = cpu_to_le16(val);
 
 	/* Handle fragmented skb */
 	/* special handle for frags inside 2nd and 3rd bds.. */
@@ -1624,7 +1642,7 @@ netdev_tx_t qede_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* Advance packet producer only before sending the packet since mapping
 	 * of pages may fail.
 	 */
-	txq->sw_tx_prod++;
+	txq->sw_tx_prod = (txq->sw_tx_prod + 1) % txq->num_tx_buffers;
 
 	/* 'next page' entries are counted in the producer value */
 	txq->tx_db.data.bd_prod =
@@ -1682,13 +1700,24 @@ netdev_features_t qede_features_check(struct sk_buff *skb,
 		}
 
 		/* Disable offloads for geneve tunnels, as HW can't parse
-		 * the geneve header which has option length greater than 32B.
+		 * the geneve header which has option length greater than 32b
+		 * and disable offloads for the ports which are not offloaded.
 		 */
-		if ((l4_proto == IPPROTO_UDP) &&
-		    ((skb_inner_mac_header(skb) -
-		      skb_transport_header(skb)) > QEDE_MAX_TUN_HDR_LEN))
-			return features & ~(NETIF_F_CSUM_MASK |
-					    NETIF_F_GSO_MASK);
+		if (l4_proto == IPPROTO_UDP) {
+			struct qede_dev *edev = netdev_priv(dev);
+			u16 hdrlen, vxln_port, gnv_port;
+
+			hdrlen = QEDE_MAX_TUN_HDR_LEN;
+			vxln_port = edev->vxlan_dst_port;
+			gnv_port = edev->geneve_dst_port;
+
+			if ((skb_inner_mac_header(skb) -
+			     skb_transport_header(skb)) > hdrlen ||
+			     (ntohs(udp_hdr(skb)->dest) != vxln_port &&
+			      ntohs(udp_hdr(skb)->dest) != gnv_port))
+				return features & ~(NETIF_F_CSUM_MASK |
+						    NETIF_F_GSO_MASK);
+		}
 	}
 
 	return features;
