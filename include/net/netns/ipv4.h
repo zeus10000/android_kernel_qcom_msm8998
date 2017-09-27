@@ -8,7 +8,6 @@
 #include <linux/uidgid.h>
 #include <net/inet_frag.h>
 #include <linux/rcupdate.h>
-#include <linux/siphash.h>
 
 struct tcpm_hash_bucket;
 struct ctl_table_header;
@@ -50,10 +49,10 @@ struct netns_ipv4 {
 #ifdef CONFIG_IP_MULTIPLE_TABLES
 	struct fib_rules_ops	*rules_ops;
 	bool			fib_has_custom_rules;
-	struct fib_table __rcu	*fib_local;
 	struct fib_table __rcu	*fib_main;
 	struct fib_table __rcu	*fib_default;
 #endif
+	bool			fib_has_custom_local_routes;
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	int			fib_num_tclassid_users;
 #endif
@@ -90,15 +89,23 @@ struct netns_ipv4 {
 	int sysctl_tcp_ecn;
 	int sysctl_tcp_ecn_fallback;
 
+	int sysctl_ip_default_ttl;
 	int sysctl_ip_no_pmtu_disc;
 	int sysctl_ip_fwd_use_pmtu;
 	int sysctl_ip_nonlocal_bind;
+	/* Shall we try to damage output packets if routing dev changes? */
+	int sysctl_ip_dynaddr;
+	int sysctl_ip_early_demux;
+	int sysctl_tcp_early_demux;
+	int sysctl_udp_early_demux;
 
 	int sysctl_fwmark_reflect;
 	int sysctl_tcp_fwmark_accept;
+#ifdef CONFIG_NET_L3_MASTER_DEV
+	int sysctl_tcp_l3mdev_accept;
+#endif
 	int sysctl_tcp_mtu_probing;
 	int sysctl_tcp_base_mss;
-	int sysctl_tcp_min_snd_mss;
 	int sysctl_tcp_probe_threshold;
 	u32 sysctl_tcp_probe_interval;
 
@@ -120,6 +127,17 @@ struct netns_ipv4 {
 	int sysctl_tcp_window_scaling;
 	int sysctl_tcp_timestamps;
 	struct inet_timewait_death_row tcp_death_row;
+	int sysctl_max_syn_backlog;
+	int sysctl_tcp_fastopen;
+
+#ifdef CONFIG_NET_L3_MASTER_DEV
+	int sysctl_udp_l3mdev_accept;
+#endif
+
+	int sysctl_igmp_max_memberships;
+	int sysctl_igmp_max_msf;
+	int sysctl_igmp_llm_reports;
+	int sysctl_igmp_qrv;
 
 	struct ping_group_range ping_group_range;
 
@@ -127,6 +145,7 @@ struct netns_ipv4 {
 
 #ifdef CONFIG_SYSCTL
 	unsigned long *sysctl_local_reserved_ports;
+	int sysctl_ip_prot_sock;
 #endif
 
 #ifdef CONFIG_IP_MROUTE
@@ -137,7 +156,17 @@ struct netns_ipv4 {
 	struct fib_rules_ops	*mr_rules_ops;
 #endif
 #endif
+#ifdef CONFIG_IP_ROUTE_MULTIPATH
+	int sysctl_fib_multipath_use_neigh;
+	int sysctl_fib_multipath_hash_policy;
+#endif
+
+	struct fib_notifier_ops	*notifier_ops;
+	unsigned int	fib_seq;	/* protected by rtnl_mutex */
+
+	struct fib_notifier_ops	*ipmr_notifier_ops;
+	unsigned int	ipmr_seq;	/* protected by rtnl_mutex */
+
 	atomic_t	rt_genid;
-	siphash_key_t	ip_id_key;
 };
 #endif
