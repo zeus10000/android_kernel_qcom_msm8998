@@ -1,3 +1,9 @@
+<<<<<<< HEAD:tools/perf/util/sigchain.c
+=======
+// SPDX-License-Identifier: GPL-2.0
+#include <signal.h>
+#include "subcmd-util.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/sigchain.c
 #include "sigchain.h"
 #include "cache.h"
 

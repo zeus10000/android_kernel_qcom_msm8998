@@ -1,4 +1,12 @@
+<<<<<<< HEAD:drivers/staging/lustre/lustre/libcfs/Makefile
 obj-$(CONFIG_LUSTRE_FS) += libcfs.o
+=======
+# SPDX-License-Identifier: GPL-2.0
+subdir-ccflags-y += -I$(srctree)/drivers/staging/lustre/include
+subdir-ccflags-y += -I$(srctree)/drivers/staging/lustre/lustre/include
+
+obj-$(CONFIG_LNET) += libcfs.o
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):drivers/staging/lustre/lnet/libcfs/Makefile
 
 libcfs-linux-objs := linux-tracefile.o linux-debug.o
 libcfs-linux-objs += linux-prim.o linux-cpu.o

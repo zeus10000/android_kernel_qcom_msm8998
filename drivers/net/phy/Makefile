@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # Makefile for Linux PHY drivers
 
 libphy-objs			:= phy.o phy_device.o mdio_bus.o

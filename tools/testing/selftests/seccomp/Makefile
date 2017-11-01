@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 TEST_PROGS := seccomp_bpf
 CFLAGS += -Wl,-no-as-needed -Wall
 LDFLAGS += -lpthread

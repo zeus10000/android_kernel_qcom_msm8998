@@ -1,4 +1,8 @@
+<<<<<<< HEAD:arch/x86/kernel/cpu/perf_event_intel_uncore.h
 #include <linux/module.h>
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/x86/events/intel/uncore.h
 #include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/perf_event.h>

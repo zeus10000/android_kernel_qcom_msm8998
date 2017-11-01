@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/mmu-hash32.h
 #ifndef _ASM_POWERPC_MMU_HASH32_H_
 #define _ASM_POWERPC_MMU_HASH32_H_
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_BOOK3S_32_MMU_HASH_H_
+#define _ASM_POWERPC_BOOK3S_32_MMU_HASH_H_
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/book3s/32/mmu-hash.h
 /*
  * 32-bit hash table MMU support
  */

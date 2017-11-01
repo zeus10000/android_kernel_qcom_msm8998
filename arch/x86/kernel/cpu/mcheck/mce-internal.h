@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __X86_MCE_INTERNAL_H__
+#define __X86_MCE_INTERNAL_H__
+
 #include <linux/device.h>
 #include <asm/mce.h>
 

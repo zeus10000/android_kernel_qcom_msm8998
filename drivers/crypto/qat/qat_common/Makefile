@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 $(obj)/qat_rsapubkey-asn1.o: $(obj)/qat_rsapubkey-asn1.c \
 			     $(obj)/qat_rsapubkey-asn1.h
 $(obj)/qat_rsaprivkey-asn1.o: $(obj)/qat_rsaprivkey-asn1.c \

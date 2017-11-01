@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/bitops.h>
 #include "threefish_api.h"
 
 void threefish_encrypt_256(struct threefish_key *key_ctx, u64 *input,

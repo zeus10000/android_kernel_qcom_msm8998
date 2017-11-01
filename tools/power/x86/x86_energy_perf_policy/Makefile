@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 DESTDIR ?=
 
 x86_energy_perf_policy : x86_energy_perf_policy.c

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
+#include <inttypes.h>
+/* For the CLR_() macros */
+#include <pthread.h>
+
 #include <sched.h>
 #include "evlist.h"
 #include "evsel.h"

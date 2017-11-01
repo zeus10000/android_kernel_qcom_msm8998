@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef GHES_H
+#define GHES_H
+
 #include <acpi/apei.h>
 #include <acpi/hed.h>
 

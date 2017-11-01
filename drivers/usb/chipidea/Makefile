@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 ccflags-$(CONFIG_USB_CHIPIDEA_DEBUG) := -DDEBUG
 
 obj-$(CONFIG_USB_CHIPIDEA)		+= ci_hdrc.o

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 config AMD_MCE_INJ
 	tristate "Simple MCE injection interface for AMD processors"
 	depends on RAS && EDAC_DECODE_MCE && DEBUG_FS && AMD_NB

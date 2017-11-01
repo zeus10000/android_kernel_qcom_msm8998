@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*!
  *  @file	wilc_wfi_cfgopertaions.c
  *  @brief	CFG80211 Function Implementation functionality

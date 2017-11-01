@@ -1,4 +1,9 @@
+<<<<<<< HEAD:include/linux/spi/ad7879.h
 /* linux/spi/ad7879.h */
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+/* linux/platform_data/ad7879.h */
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):include/linux/platform_data/ad7879.h
 
 /* Touchscreen characteristics vary between boards and models.  The
  * platform_data for the device's "struct device" holds this information.

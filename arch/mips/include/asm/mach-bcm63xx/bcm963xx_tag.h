@@ -1,5 +1,13 @@
+<<<<<<< HEAD:arch/mips/include/asm/mach-bcm63xx/bcm963xx_tag.h
 #ifndef __BCM963XX_TAG_H
 #define __BCM963XX_TAG_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __LINUX_BCM963XX_TAG_H__
+#define __LINUX_BCM963XX_TAG_H__
+
+#include <linux/types.h>
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):include/linux/bcm963xx_tag.h
 
 #define TAGVER_LEN		4	/* Length of Tag Version */
 #define TAGLAYOUT_LEN		4	/* Length of FlashLayoutVer */

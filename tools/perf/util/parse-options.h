@@ -1,5 +1,11 @@
+<<<<<<< HEAD:tools/perf/util/parse-options.h
 #ifndef __PERF_PARSE_OPTIONS_H
 #define __PERF_PARSE_OPTIONS_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __SUBCMD_PARSE_OPTIONS_H
+#define __SUBCMD_PARSE_OPTIONS_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/parse-options.h
 
 #include <linux/kernel.h>
 #include <stdbool.h>

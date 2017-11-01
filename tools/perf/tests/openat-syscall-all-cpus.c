@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
+#include <inttypes.h>
+/* For the CPU_* macros */
+#include <pthread.h>
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <api/fs/fs.h>
 #include <linux/err.h>
 #include "evsel.h"

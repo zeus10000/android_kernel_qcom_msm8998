@@ -1,4 +1,5 @@
 #!/usr/bin/perl -w
+# SPDX-License-Identifier: GPL-2.0
 #
 # headers_check.pl execute a number of trivial consistency checks
 #

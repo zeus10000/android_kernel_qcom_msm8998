@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
+/* Various wrappers to make the kernel .S file build in user-space: */
+
 #define memcpy MEMCPY /* don't hide glibc's memcpy() */
 #define altinstr_replacement text
 #define globl p2align 4; .globl

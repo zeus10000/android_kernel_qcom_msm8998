@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 CC = $(CROSS_COMPILE)gcc
 BUILD_FLAGS = -DKTEST
 CFLAGS += -O3 -Wl,-no-as-needed -Wall $(BUILD_FLAGS)

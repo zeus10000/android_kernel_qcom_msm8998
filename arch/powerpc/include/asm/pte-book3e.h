@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/pte-book3e.h
 #ifndef _ASM_POWERPC_PTE_BOOK3E_H
 #define _ASM_POWERPC_PTE_BOOK3E_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_NOHASH_PTE_BOOK3E_H
+#define _ASM_POWERPC_NOHASH_PTE_BOOK3E_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/nohash/pte-book3e.h
 #ifdef __KERNEL__
 
 /* PTE bit definitions for processors compliant to the Book3E

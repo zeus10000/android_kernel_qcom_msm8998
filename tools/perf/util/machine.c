@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "build-id.h"
 #include "callchain.h"
 #include "debug.h"

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/compiler.h>
+
 #define bootlogo_width 160
 #define bootlogo_height 160
 unsigned char __attribute__ ((aligned(16))) bootlogo_bits[] = {

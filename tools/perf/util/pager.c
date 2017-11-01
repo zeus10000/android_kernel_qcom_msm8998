@@ -1,4 +1,15 @@
+<<<<<<< HEAD:tools/perf/util/pager.c
 #include "cache.h"
+=======
+// SPDX-License-Identifier: GPL-2.0
+#include <sys/select.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include "pager.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/pager.c
 #include "run-command.h"
 #include "sigchain.h"
 

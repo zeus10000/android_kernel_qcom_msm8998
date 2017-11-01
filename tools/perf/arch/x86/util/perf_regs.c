@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
+#include <string.h>
+#include <regex.h>
+
 #include "../../perf.h"
 #include "../../util/perf_regs.h"
 

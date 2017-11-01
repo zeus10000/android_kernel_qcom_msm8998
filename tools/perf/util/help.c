@@ -1,7 +1,22 @@
+<<<<<<< HEAD:tools/perf/util/help.c
 #include "cache.h"
 #include "../builtin.h"
 #include "exec_cmd.h"
 #include "levenshtein.h"
+=======
+// SPDX-License-Identifier: GPL-2.0
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <linux/string.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+#include "subcmd-util.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/help.c
 #include "help.h"
 #include <termios.h>
 

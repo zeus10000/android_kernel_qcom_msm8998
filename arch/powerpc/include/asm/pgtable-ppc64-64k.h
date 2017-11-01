@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/pgtable-ppc64-64k.h
 #ifndef _ASM_POWERPC_PGTABLE_PPC64_64K_H
 #define _ASM_POWERPC_PGTABLE_PPC64_64K_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_NOHASH_64_PGTABLE_64K_H
+#define _ASM_POWERPC_NOHASH_64_PGTABLE_64K_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/nohash/64/pgtable-64k.h
 
 #include <asm-generic/pgtable-nopud.h>
 

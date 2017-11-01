@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 /* FIXME driver should be able to handle IRQs...  */
 

@@ -1,3 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __TOOLS_LINUX_LIST_H
+#define __TOOLS_LINUX_LIST_H
+
+#include <linux/types.h>
+#include <linux/poison.h>
+#include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/types.h>

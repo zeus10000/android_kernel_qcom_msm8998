@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 CC = $(CROSS_COMPILE)gcc
 CFLAGS += -D_FILE_OFFSET_BITS=64
 CFLAGS += -I../../../../include/uapi/

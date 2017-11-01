@@ -1,4 +1,17 @@
+<<<<<<< HEAD:tools/perf/util/run-command.c
 #include "cache.h"
+=======
+// SPDX-License-Identifier: GPL-2.0
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <linux/string.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include "subcmd-util.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/run-command.c
 #include "run-command.h"
 #include "exec_cmd.h"
 #include "debug.h"

@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/pte-hash32.h
 #ifndef _ASM_POWERPC_PTE_HASH32_H
 #define _ASM_POWERPC_PTE_HASH32_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_BOOK3S_32_HASH_H
+#define _ASM_POWERPC_BOOK3S_32_HASH_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/book3s/32/hash.h
 #ifdef __KERNEL__
 
 /*

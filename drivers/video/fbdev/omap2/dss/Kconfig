@@ -1,4 +1,9 @@
+<<<<<<< HEAD:drivers/video/fbdev/omap2/dss/Kconfig
 config OMAP2_DSS_INIT
+=======
+# SPDX-License-Identifier: GPL-2.0
+config FB_OMAP2_DSS_INIT
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):drivers/video/fbdev/omap2/omapfb/dss/Kconfig
 	bool
 
 menuconfig OMAP2_DSS

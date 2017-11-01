@@ -1,5 +1,15 @@
+<<<<<<< HEAD
 #ifndef _SCHED_SYSCTL_H
 #define _SCHED_SYSCTL_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _LINUX_SCHED_SYSCTL_H
+#define _LINUX_SCHED_SYSCTL_H
+
+#include <linux/types.h>
+
+struct ctl_table;
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license)
 
 #ifdef CONFIG_DETECT_HUNG_TASK
 extern int	     sysctl_hung_task_check_count;

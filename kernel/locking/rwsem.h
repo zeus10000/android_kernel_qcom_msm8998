@@ -1,3 +1,21 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * The owner field of the rw_semaphore structure will be set to
+ * RWSEM_READ_OWNED when a reader grabs the lock. A writer will clear
+ * the owner field when it unlocks. A reader, on the other hand, will
+ * not touch the owner field when it unlocks.
+ *
+ * In essence, the owner field now has the following 3 states:
+ *  1) 0
+ *     - lock is free or the owner hasn't set the field yet
+ *  2) RWSEM_READER_OWNED
+ *     - lock is currently or previously owned by readers (lock is free
+ *       or not set by owner yet)
+ *  3) Other non-zero value
+ *     - a writer owns the lock
+ */
+#define RWSEM_READER_OWNED	((struct task_struct *)1UL)
+
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 static inline void rwsem_set_owner(struct rw_semaphore *sem)
 {

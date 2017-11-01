@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
+#include <inttypes.h>
 #include "util.h"
 #include <sys/types.h>
 #include <byteswap.h>

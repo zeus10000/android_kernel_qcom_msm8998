@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 cec-objs := cec-core.o cec-adap.o cec-api.o
 
 ifeq ($(CONFIG_MEDIA_CEC_SUPPORT),y)

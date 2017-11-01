@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SCHED_DEADLINE_H
 #define _SCHED_DEADLINE_H
 

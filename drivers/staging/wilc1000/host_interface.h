@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*!
  *  @file	host_interface.h
  *  @brief	File containg host interface APIs

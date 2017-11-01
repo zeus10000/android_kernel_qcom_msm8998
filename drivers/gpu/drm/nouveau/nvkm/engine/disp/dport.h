@@ -1,6 +1,43 @@
+<<<<<<< HEAD:drivers/gpu/drm/nouveau/nvkm/engine/disp/dport.h
 #ifndef __NVKM_DISP_DPORT_H__
 #define __NVKM_DISP_DPORT_H__
 #include <core/os.h>
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __NVKM_DISP_DP_H__
+#define __NVKM_DISP_DP_H__
+#define nvkm_dp(p) container_of((p), struct nvkm_dp, outp)
+#include "outp.h"
+
+#include <core/notify.h>
+#include <subdev/bios.h>
+#include <subdev/bios/dp.h>
+
+struct nvkm_dp {
+	union {
+		struct nvkm_outp base;
+		struct nvkm_outp outp;
+	};
+
+	struct nvbios_dpout info;
+	u8 version;
+
+	struct nvkm_i2c_aux *aux;
+
+	struct nvkm_notify hpd;
+	bool present;
+	u8 dpcd[16];
+
+	struct mutex mutex;
+	struct {
+		atomic_t done;
+		bool mst;
+	} lt;
+};
+
+int nvkm_dp_new(struct nvkm_disp *, int index, struct dcb_output *,
+		struct nvkm_outp **);
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):drivers/gpu/drm/nouveau/nvkm/engine/disp/dp.h
 
 /* DPCD Receiver Capabilities */
 #define DPCD_RC00_DPCD_REV                                              0x00000

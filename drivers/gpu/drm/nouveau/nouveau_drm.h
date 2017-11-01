@@ -1,5 +1,11 @@
+<<<<<<< HEAD:drivers/gpu/drm/nouveau/nouveau_drm.h
 #ifndef __NOUVEAU_DRMCLI_H__
 #define __NOUVEAU_DRMCLI_H__
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __NOUVEAU_DRV_H__
+#define __NOUVEAU_DRV_H__
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):drivers/gpu/drm/nouveau/nouveau_drv.h
 
 #define DRIVER_AUTHOR		"Nouveau Project"
 #define DRIVER_EMAIL		"nouveau@lists.freedesktop.org"

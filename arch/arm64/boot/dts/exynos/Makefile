@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 dtb-$(CONFIG_ARCH_EXYNOS7) += exynos7-espresso.dtb
 
 always		:= $(dtb-y)

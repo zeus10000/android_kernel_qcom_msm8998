@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* DMA mapping. Nothing tricky here, just virt_to_phys */
 
 #ifndef _ASM_CRIS_DMA_MAPPING_H

@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/x86/kernel/cpu/perf_event_intel_uncore_snb.c
 /* Nehalem/SandBridge/Haswell uncore support */
 #include "perf_event_intel_uncore.h"
+=======
+// SPDX-License-Identifier: GPL-2.0
+/* Nehalem/SandBridge/Haswell/Broadwell/Skylake uncore support */
+#include "uncore.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/x86/events/intel/uncore_snb.c
 
 /* Uncore IMC PCI IDs */
 #define PCI_DEVICE_ID_INTEL_SNB_IMC	0x0100

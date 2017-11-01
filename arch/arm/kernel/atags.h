@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifdef CONFIG_ATAGS_PROC
 extern void save_atags(struct tag *tags);
 #else

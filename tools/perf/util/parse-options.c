@@ -1,4 +1,17 @@
+<<<<<<< HEAD:tools/perf/util/parse-options.c
 #include "util.h"
+=======
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/compiler.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <ctype.h>
+#include "subcmd-util.h"
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/lib/subcmd/parse-options.c
 #include "parse-options.h"
 #include "cache.h"
 #include "header.h"

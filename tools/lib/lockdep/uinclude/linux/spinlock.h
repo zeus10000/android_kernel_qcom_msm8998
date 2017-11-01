@@ -1,5 +1,11 @@
+<<<<<<< HEAD:tools/lib/lockdep/uinclude/linux/spinlock.h
 #ifndef _LIBLOCKDEP_SPINLOCK_H_
 #define _LIBLOCKDEP_SPINLOCK_H_
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __LINUX_SPINLOCK_H_
+#define __LINUX_SPINLOCK_H_
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/include/linux/spinlock.h
 
 #include <pthread.h>
 #include <stdbool.h>

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 KASAN_SANITIZE_scm.o := n
 
 CFLAGS_scm.o :=$(call as-instr,.arch_extension sec,-DREQUIRES_SEC=1)

@@ -1,5 +1,10 @@
 #!/bin/sh
+<<<<<<< HEAD:tools/testing/selftests/firmware/fw_userhelper.sh
 # This validates that the kernel will fall back to using the user helper
+=======
+# SPDX-License-Identifier: GPL-2.0
+# This validates that the kernel will fall back to using the fallback mechanism
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):tools/testing/selftests/firmware/fw_fallback.sh
 # to load firmware it can't find on disk itself. We must request a firmware
 # that the kernel won't find, and any installed helper (e.g. udev) also
 # won't find so that we can do the load ourself manually.

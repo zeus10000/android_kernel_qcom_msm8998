@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 ccflags-y := -Iinclude/drm -Idrivers/gpu/drm/msm -Idrivers/gpu/drm/msm/dsi-staging
 ccflags-y += -Idrivers/gpu/drm/msm/hdmi
 ccflags-y += -Idrivers/gpu/drm/msm/hdmi-staging

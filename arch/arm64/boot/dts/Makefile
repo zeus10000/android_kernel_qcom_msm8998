@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+dts-dirs += actions
+dts-dirs += al
+dts-dirs += allwinner
 dts-dirs += altera
 dts-dirs += amd
 dts-dirs += apm

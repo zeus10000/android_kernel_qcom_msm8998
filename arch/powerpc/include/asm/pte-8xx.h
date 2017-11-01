@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/pte-8xx.h
 #ifndef _ASM_POWERPC_PTE_8xx_H
 #define _ASM_POWERPC_PTE_8xx_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_NOHASH_32_PTE_8xx_H
+#define _ASM_POWERPC_NOHASH_32_PTE_8xx_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/nohash/32/pte-8xx.h
 #ifdef __KERNEL__
 
 /*

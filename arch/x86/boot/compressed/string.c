@@ -1,3 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * This provides an optimized implementation of memcpy, and a simplified
+ * implementation of memset and memmove. These are used here because the
+ * standard kernel runtime versions are not yet available and we don't
+ * trust the gcc built-in implementations as they may do unexpected things
+ * (e.g. FPU ops) in the minimal decompression stub execution environment.
+ */
+#include "error.h"
+
 #include "../string.c"
 
 #ifdef CONFIG_X86_32

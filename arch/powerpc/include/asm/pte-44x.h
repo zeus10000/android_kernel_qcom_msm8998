@@ -1,5 +1,11 @@
+<<<<<<< HEAD:arch/powerpc/include/asm/pte-44x.h
 #ifndef _ASM_POWERPC_PTE_44x_H
 #define _ASM_POWERPC_PTE_44x_H
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_NOHASH_32_PTE_44x_H
+#define _ASM_POWERPC_NOHASH_32_PTE_44x_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):arch/powerpc/include/asm/nohash/32/pte-44x.h
 #ifdef __KERNEL__
 
 /*

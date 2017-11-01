@@ -1,3 +1,4 @@
+<<<<<<< HEAD:arch/mips/include/asm/octeon/cvmx-mpi-defs.h
 /***********************license start***************
  * Author: Cavium Networks
  *
@@ -24,6 +25,11 @@
  * This file may also be available under a different license from Cavium.
  * Contact Cavium Networks for more information
  ***********************license end**************************************/
+=======
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __SPI_CAVIUM_H
+#define __SPI_CAVIUM_H
+>>>>>>> b24413180f56 (License cleanup: add SPDX GPL-2.0 license identifier to files with no license):drivers/spi/spi-cavium.h
 
 #ifndef __CVMX_MPI_DEFS_H__
 #define __CVMX_MPI_DEFS_H__

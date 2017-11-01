@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Common code for the sigreturn entry points in vDSO images.
  * So far this code is the same for both int80 and sysenter versions.
