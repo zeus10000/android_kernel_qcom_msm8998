@@ -1,7 +1,6 @@
-/* mc146818rtc.h: RTC defs
- *
- * Copyright (C) 2005 Red Hat, Inc. All Rights Reserved.
- * Written by David Howells (dhowells@redhat.com)
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
+/*
+ * Copyright (c) 2015-2016, IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -9,8 +8,12 @@
  * 2 of the License, or (at your option) any later version.
  */
 
-#ifndef _ASM_MC146818RTC_H
-#define _ASM_MC146818RTC_H
+#ifndef _UAPI_LINUX_BT_BMC_H
+#define _UAPI_LINUX_BT_BMC_H
 
+#include <linux/ioctl.h>
 
-#endif /* _ASM_MC146818RTC_H */
+#define __BT_BMC_IOCTL_MAGIC	0xb1
+#define BT_BMC_IOCTL_SMS_ATN	_IO(__BT_BMC_IOCTL_MAGIC, 0x00)
+
+#endif /* _UAPI_LINUX_BT_BMC_H */
