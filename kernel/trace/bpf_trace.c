@@ -14,7 +14,7 @@
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
 #include <linux/kprobes.h>
-#include <asm/kprobes.h>
+#include <linux/error-injection.h>
 
 #include "trace_probe.h"
 #include "trace.h"
@@ -83,9 +83,8 @@ EXPORT_SYMBOL_GPL(trace_call_bpf);
 #ifdef CONFIG_BPF_KPROBE_OVERRIDE
 BPF_CALL_2(bpf_override_return, struct pt_regs *, regs, unsigned long, rc)
 {
-	__this_cpu_write(bpf_kprobe_override, 1);
 	regs_set_return_value(regs, rc);
-	arch_ftrace_kprobe_override_function(regs);
+	override_function_with_return(regs);
 	return 0;
 }
 
@@ -114,7 +113,7 @@ static const struct bpf_func_proto bpf_probe_read_proto = {
 	.gpl_only	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
 	.arg3_type	= ARG_ANYTHING,
 };
 
@@ -365,14 +364,13 @@ static const struct bpf_func_proto bpf_perf_event_read_value_proto = {
 	.arg4_type	= ARG_CONST_SIZE,
 };
 
-static DEFINE_PER_CPU(struct perf_sample_data, bpf_sd);
+static DEFINE_PER_CPU(struct perf_sample_data, bpf_trace_sd);
 
 static __always_inline u64
 __bpf_perf_event_output(struct pt_regs *regs, struct bpf_map *map,
-			u64 flags, struct perf_raw_record *raw)
+			u64 flags, struct perf_sample_data *sd)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	struct perf_sample_data *sd = this_cpu_ptr(&bpf_sd);
 	unsigned int cpu = smp_processor_id();
 	u64 index = flags & BPF_F_INDEX_MASK;
 	struct bpf_event_entry *ee;
@@ -395,8 +393,6 @@ __bpf_perf_event_output(struct pt_regs *regs, struct bpf_map *map,
 	if (unlikely(event->oncpu != cpu))
 		return -EOPNOTSUPP;
 
-	perf_sample_data_init(sd, 0, 0);
-	sd->raw = raw;
 	perf_event_output(event, sd, regs);
 	return 0;
 }
@@ -404,6 +400,7 @@ __bpf_perf_event_output(struct pt_regs *regs, struct bpf_map *map,
 BPF_CALL_5(bpf_perf_event_output, struct pt_regs *, regs, struct bpf_map *, map,
 	   u64, flags, void *, data, u64, size)
 {
+	struct perf_sample_data *sd = this_cpu_ptr(&bpf_trace_sd);
 	struct perf_raw_record raw = {
 		.frag = {
 			.size = size,
@@ -414,7 +411,10 @@ BPF_CALL_5(bpf_perf_event_output, struct pt_regs *, regs, struct bpf_map *, map,
 	if (unlikely(flags & ~(BPF_F_INDEX_MASK)))
 		return -EINVAL;
 
-	return __bpf_perf_event_output(regs, map, flags, &raw);
+	perf_sample_data_init(sd, 0, 0);
+	sd->raw = &raw;
+
+	return __bpf_perf_event_output(regs, map, flags, sd);
 }
 
 static const struct bpf_func_proto bpf_perf_event_output_proto = {
@@ -425,14 +425,16 @@ static const struct bpf_func_proto bpf_perf_event_output_proto = {
 	.arg2_type	= ARG_CONST_MAP_PTR,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_MEM,
-	.arg5_type	= ARG_CONST_SIZE,
+	.arg5_type	= ARG_CONST_SIZE_OR_ZERO,
 };
 
 static DEFINE_PER_CPU(struct pt_regs, bpf_pt_regs);
+static DEFINE_PER_CPU(struct perf_sample_data, bpf_misc_sd);
 
 u64 bpf_event_output(struct bpf_map *map, u64 flags, void *meta, u64 meta_size,
 		     void *ctx, u64 ctx_size, bpf_ctx_copy_t ctx_copy)
 {
+	struct perf_sample_data *sd = this_cpu_ptr(&bpf_misc_sd);
 	struct pt_regs *regs = this_cpu_ptr(&bpf_pt_regs);
 	struct perf_raw_frag frag = {
 		.copy		= ctx_copy,
@@ -450,8 +452,10 @@ u64 bpf_event_output(struct bpf_map *map, u64 flags, void *meta, u64 meta_size,
 	};
 
 	perf_fetch_caller_regs(regs);
+	perf_sample_data_init(sd, 0, 0);
+	sd->raw = &raw;
 
-	return __bpf_perf_event_output(regs, map, flags, &raw);
+	return __bpf_perf_event_output(regs, map, flags, sd);
 }
 
 BPF_CALL_0(bpf_get_current_task)
@@ -516,7 +520,7 @@ static const struct bpf_func_proto bpf_probe_read_str_proto = {
 	.gpl_only	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
 	.arg3_type	= ARG_ANYTHING,
 };
 
@@ -631,7 +635,7 @@ static const struct bpf_func_proto bpf_perf_event_output_proto_tp = {
 	.arg2_type	= ARG_CONST_MAP_PTR,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_MEM,
-	.arg5_type	= ARG_CONST_SIZE,
+	.arg5_type	= ARG_CONST_SIZE_OR_ZERO,
 };
 
 BPF_CALL_3(bpf_get_stackid_tp, void *, tp_buff, struct bpf_map *, map,
@@ -795,11 +799,11 @@ int perf_event_attach_bpf_prog(struct perf_event *event,
 	int ret = -EEXIST;
 
 	/*
-	 * Kprobe override only works for ftrace based kprobes, and only if they
-	 * are on the opt-in list.
+	 * Kprobe override only works if they are on the function entry,
+	 * and only if they are on the opt-in list.
 	 */
 	if (prog->kprobe_override &&
-	    (!trace_kprobe_ftrace(event->tp_event) ||
+	    (!trace_kprobe_on_func_entry(event->tp_event) ||
 	     !trace_kprobe_error_injectable(event->tp_event)))
 		return -EINVAL;
 
