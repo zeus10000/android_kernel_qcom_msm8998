@@ -1917,18 +1917,50 @@ static inline void tcp_init_undo(struct tcp_sock *tp)
 	tp->undo_retrans = tp->retrans_out ? : -1;
 }
 
-/* Enter Loss state. If we detect SACK reneging, forget all SACK information
+static bool tcp_is_rack(const struct sock *sk)
+{
+	return sock_net(sk)->ipv4.sysctl_tcp_recovery & TCP_RACK_LOSS_DETECTION;
+}
+
+/* If we detect SACK reneging, forget all SACK information
  * and reset tags completely, otherwise preserve SACKs. If receiver
  * dropped its ofo queue, we will know this due to reneging detection.
  */
+static void tcp_timeout_mark_lost(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct sk_buff *skb;
+	bool is_reneg;			/* is receiver reneging on SACKs? */
+
+	skb = tcp_rtx_queue_head(sk);
+	is_reneg = skb && (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED);
+	if (is_reneg) {
+		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPSACKRENEGING);
+		tp->sacked_out = 0;
+		/* Mark SACK reneging until we recover from this loss event. */
+		tp->is_sack_reneg = 1;
+	} else if (tcp_is_reno(tp)) {
+		tcp_reset_reno_sack(tp);
+	}
+
+	skb_rbtree_walk_from(skb) {
+		if (is_reneg)
+			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;
+		tcp_mark_skb_lost(sk, skb);
+	}
+	tcp_verify_left_out(tp);
+	tcp_clear_all_retrans_hints(tp);
+}
+
+/* Enter Loss state. */
 void tcp_enter_loss(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct net *net = sock_net(sk);
-	struct sk_buff *skb;
 	bool new_recovery = icsk->icsk_ca_state < TCP_CA_Recovery;
-	bool is_reneg;			/* is receiver reneging on SACKs? */
+
+	tcp_timeout_mark_lost(sk);
 
 	/* Reduce ssthresh if it has not yet been made inside this window. */
 	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||
@@ -1943,25 +1975,6 @@ void tcp_enter_loss(struct sock *sk)
 	tp->snd_cwnd	   = 1;
 	tp->snd_cwnd_cnt   = 0;
 	tp->snd_cwnd_stamp = tcp_jiffies32;
-
-	if (tcp_is_reno(tp))
-		tcp_reset_reno_sack(tp);
-
-	skb = tcp_rtx_queue_head(sk);
-	is_reneg = skb && (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED);
-	if (is_reneg) {
-		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPSACKRENEGING);
-		tp->sacked_out = 0;
-		/* Mark SACK reneging until we recover from this loss event. */
-		tp->is_sack_reneg = 1;
-	}
-	skb_rbtree_walk_from(skb) {
-		if (is_reneg)
-			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;
-		tcp_mark_skb_lost(sk, skb);
-	}
-	tcp_verify_left_out(tp);
-	tcp_clear_all_retrans_hints(tp);
 
 	/* Timeout in disordered state after receiving substantial DUPACKs
 	 * suggests that the degree of reordering is over-estimated.
@@ -2021,11 +2034,6 @@ static bool tcp_check_sack_reneging(struct sock *sk, int flag)
 static inline int tcp_dupack_heuristics(const struct tcp_sock *tp)
 {
 	return tp->sacked_out + 1;
-}
-
-static bool tcp_is_rack(const struct sock *sk)
-{
-	return sock_net(sk)->ipv4.sysctl_tcp_recovery & TCP_RACK_LOSS_DETECTION;
 }
 
 /* Linux NewReno/SACK/ECN state machine.
