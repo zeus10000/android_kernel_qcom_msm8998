@@ -41,6 +41,7 @@
 # endif
 #endif
 #include "bpf_rlimit.h"
+#include "bpf_rand.h"
 #include "../../../include/linux/filter.h"
 
 #ifndef ARRAY_SIZE
@@ -152,6 +153,30 @@ static void bpf_fill_jump_around_ld_abs(struct bpf_test *self)
 	while (i < len - 1)
 		insn[i++] = BPF_LD_ABS(BPF_B, 1);
 	insn[i] = BPF_EXIT_INSN();
+}
+
+static void bpf_fill_rand_ld_dw(struct bpf_test *self)
+{
+	struct bpf_insn *insn = self->insns;
+	uint64_t res = 0;
+	int i = 0;
+
+	insn[i++] = BPF_MOV32_IMM(BPF_REG_0, 0);
+	while (i < self->retval) {
+		uint64_t val = bpf_semi_rand_get();
+		struct bpf_insn tmp[2] = { BPF_LD_IMM64(BPF_REG_1, val) };
+
+		res ^= val;
+		insn[i++] = tmp[0];
+		insn[i++] = tmp[1];
+		insn[i++] = BPF_ALU64_REG(BPF_XOR, BPF_REG_0, BPF_REG_1);
+	}
+	insn[i++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_0);
+	insn[i++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32);
+	insn[i++] = BPF_ALU64_REG(BPF_XOR, BPF_REG_0, BPF_REG_1);
+	insn[i] = BPF_EXIT_INSN();
+	res ^= (res >> 32);
+	self->retval = (uint32_t)res;
 }
 
 static struct bpf_test tests[] = {
@@ -1661,6 +1686,121 @@ static struct bpf_test tests[] = {
 		},
 		.result = ACCEPT,
 		.prog_type = BPF_PROG_TYPE_SK_SKB,
+	},
+	{
+		"valid access family in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, family)),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"valid access remote_ip4 in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_ip4)),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"valid access local_ip4 in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_ip4)),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"valid access remote_port in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_port)),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"valid access local_port in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_port)),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"valid access remote_ip6 in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_ip6[0])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_ip6[1])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_ip6[2])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, remote_ip6[3])),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_SKB,
+	},
+	{
+		"valid access local_ip6 in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_ip6[0])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_ip6[1])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_ip6[2])),
+			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_ip6[3])),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.prog_type = BPF_PROG_TYPE_SK_SKB,
+	},
+	{
+		"invalid 64B read of family in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1,
+				    offsetof(struct sk_msg_md, family)),
+			BPF_EXIT_INSN(),
+		},
+		.errstr = "invalid bpf_context access",
+		.result = REJECT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"invalid read past end of SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1,
+				    offsetof(struct sk_msg_md, local_port) + 4),
+			BPF_EXIT_INSN(),
+		},
+		.errstr = "R0 !read_ok",
+		.result = REJECT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
+	},
+	{
+		"invalid read offset in SK_MSG",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1,
+				    offsetof(struct sk_msg_md, family) + 1),
+			BPF_EXIT_INSN(),
+		},
+		.errstr = "invalid bpf_context access",
+		.result = REJECT,
+		.prog_type = BPF_PROG_TYPE_SK_MSG,
 	},
 	{
 		"direct packet read for SK_MSG",
@@ -8507,7 +8647,7 @@ static struct bpf_test tests[] = {
 				    offsetof(struct __sk_buff, mark)),
 			BPF_EXIT_INSN(),
 		},
-		.errstr = "dereference of modified ctx ptr R1 off=68+8, ctx+const is allowed, ctx+const+const is not",
+		.errstr = "dereference of modified ctx ptr",
 		.result = REJECT,
 		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	},
@@ -12082,6 +12222,98 @@ static struct bpf_test tests[] = {
 		.result = ACCEPT,
 		.retval = 10,
 	},
+	{
+		"ld_dw: xor semi-random 64 bit imms, test 1",
+		.insns = { },
+		.data = { },
+		.fill_helper = bpf_fill_rand_ld_dw,
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = ACCEPT,
+		.retval = 4090,
+	},
+	{
+		"ld_dw: xor semi-random 64 bit imms, test 2",
+		.insns = { },
+		.data = { },
+		.fill_helper = bpf_fill_rand_ld_dw,
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = ACCEPT,
+		.retval = 2047,
+	},
+	{
+		"ld_dw: xor semi-random 64 bit imms, test 3",
+		.insns = { },
+		.data = { },
+		.fill_helper = bpf_fill_rand_ld_dw,
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = ACCEPT,
+		.retval = 511,
+	},
+	{
+		"ld_dw: xor semi-random 64 bit imms, test 4",
+		.insns = { },
+		.data = { },
+		.fill_helper = bpf_fill_rand_ld_dw,
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = ACCEPT,
+		.retval = 5,
+	},
+	{
+		"pass unmodified ctx pointer to helper",
+		.insns = {
+			BPF_MOV64_IMM(BPF_REG_2, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_csum_update),
+			BPF_MOV64_IMM(BPF_REG_0, 0),
+			BPF_EXIT_INSN(),
+		},
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = ACCEPT,
+	},
+	{
+		"pass modified ctx pointer to helper, 1",
+		.insns = {
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -612),
+			BPF_MOV64_IMM(BPF_REG_2, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_csum_update),
+			BPF_MOV64_IMM(BPF_REG_0, 0),
+			BPF_EXIT_INSN(),
+		},
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = REJECT,
+		.errstr = "dereference of modified ctx ptr",
+	},
+	{
+		"pass modified ctx pointer to helper, 2",
+		.insns = {
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -612),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_get_socket_cookie),
+			BPF_MOV64_IMM(BPF_REG_0, 0),
+			BPF_EXIT_INSN(),
+		},
+		.result_unpriv = REJECT,
+		.result = REJECT,
+		.errstr_unpriv = "dereference of modified ctx ptr",
+		.errstr = "dereference of modified ctx ptr",
+	},
+	{
+		"pass modified ctx pointer to helper, 3",
+		.insns = {
+			BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_3, 4),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_1, BPF_REG_3),
+			BPF_MOV64_IMM(BPF_REG_2, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_csum_update),
+			BPF_MOV64_IMM(BPF_REG_0, 0),
+			BPF_EXIT_INSN(),
+		},
+		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
+		.result = REJECT,
+		.errstr = "variable ctx access var_off=(0x0; 0x4)",
+	},
 };
 
 static int probe_filter_length(const struct bpf_insn *fp)
@@ -12407,6 +12639,11 @@ static void get_unpriv_disabled()
 	FILE *fd;
 
 	fd = fopen("/proc/sys/"UNPRIV_SYSCTL, "r");
+	if (!fd) {
+		perror("fopen /proc/sys/"UNPRIV_SYSCTL);
+		unpriv_disabled = true;
+		return;
+	}
 	if (fgets(buf, 2, fd) == buf && atoi(buf))
 		unpriv_disabled = true;
 	fclose(fd);
@@ -12477,5 +12714,6 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	bpf_semi_rand_init();
 	return do_test(unpriv, from, to);
 }
