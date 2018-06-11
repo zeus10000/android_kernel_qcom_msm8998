@@ -683,7 +683,7 @@ static int __init tls_register(void)
 	build_protos(tls_prots[TLSV4], &tcp_prot);
 
 	tls_sw_proto_ops = inet_stream_ops;
-	tls_sw_proto_ops.poll = tls_sw_poll;
+	tls_sw_proto_ops.poll_mask = tls_sw_poll_mask;
 	tls_sw_proto_ops.splice_read = tls_sw_splice_read;
 
 	tcp_register_ulp(&tcp_tls_ulp_ops);
