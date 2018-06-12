@@ -10,6 +10,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 #include <linux/sunrpc/addr.h>
 #include <linux/highmem.h>
 #include <linux/log2.h>
@@ -175,8 +176,13 @@ int nfsd_reply_cache_init(void)
 		goto out_nomem;
 
 	drc_hashtbl = kcalloc(hashsize, sizeof(*drc_hashtbl), GFP_KERNEL);
-	if (!drc_hashtbl)
-		goto out_nomem;
+	if (!drc_hashtbl) {
+		drc_hashtbl = vzalloc(array_size(hashsize,
+						 sizeof(*drc_hashtbl)));
+		if (!drc_hashtbl)
+			goto out_nomem;
+	}
+
 	for (i = 0; i < hashsize; i++) {
 		INIT_LIST_HEAD(&drc_hashtbl[i].lru_head);
 		spin_lock_init(&drc_hashtbl[i].cache_lock);
@@ -205,7 +211,7 @@ void nfsd_reply_cache_shutdown(void)
 		}
 	}
 
-	kfree (drc_hashtbl);
+	kvfree(drc_hashtbl);
 	drc_hashtbl = NULL;
 	drc_hashsize = 0;
 
@@ -574,7 +580,7 @@ nfsd_cache_append(struct svc_rqst *rqstp, struct kvec *data)
 	struct kvec	*vec = &rqstp->rq_res.head[0];
 
 	if (vec->iov_len + data->iov_len > PAGE_SIZE) {
-		printk(KERN_WARNING "nfsd: cached reply too large (%Zd).\n",
+		printk(KERN_WARNING "nfsd: cached reply too large (%zd).\n",
 				data->iov_len);
 		return 0;
 	}
