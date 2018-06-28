@@ -443,6 +443,8 @@ __poll_t bt_sock_poll(struct file *file, struct socket *sock,
 
 	poll_wait(file, sk_sleep(sk), wait);
 
+	poll_wait(file, sk_sleep(sk), wait);
+
 	if (sk->sk_state == BT_LISTEN)
 		return bt_accept_poll(sk);
 
