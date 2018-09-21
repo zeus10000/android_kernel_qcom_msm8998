@@ -318,7 +318,7 @@ static void tcp_probe_timer(struct sock *sk)
 	 */
 	start_ts = tcp_skb_timestamp(skb);
 	if (!start_ts)
-		skb->skb_mstamp = tp->tcp_mstamp;
+		skb->skb_mstamp_ns = tp->tcp_wstamp_ns;
 	else if (icsk->icsk_user_timeout &&
 		 (s32)(tcp_time_stamp(tp) - start_ts) >
 		 jiffies_to_msecs(icsk->icsk_user_timeout))
