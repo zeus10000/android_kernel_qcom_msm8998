@@ -52,9 +52,8 @@ void tcp_mstamp_refresh(struct tcp_sock *tp)
 {
 	u64 val = tcp_clock_ns();
 
-	/* departure time for next data packet */
-	if (val > tp->tcp_wstamp_ns)
-		tp->tcp_wstamp_ns = val;
+	if (val > tp->tcp_clock_cache)
+		tp->tcp_clock_cache = val;
 
 	val = div_u64(val, NSEC_PER_USEC);
 	if (val > tp->tcp_mstamp)
@@ -195,21 +194,6 @@ static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts,
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 
-
-u32 tcp_default_init_rwnd(u32 mss)
-{
-	/* Initial receive window should be twice of TCP_INIT_CWND to
-	 * enable proper sending of new unsent data during fast recovery
-	 * (RFC 3517, Section 4, NextSeg() rule (2)). Further place a
-	 * limit when mss is larger than 1460.
-	 */
-	u32 init_rwnd = TCP_INIT_CWND * 2;
-
-	if (mss > 1460)
-		init_rwnd = max((1460 * init_rwnd) / mss, 2U);
-	return init_rwnd;
-}
-
 /* Determine a window scaling and initial window to offer.
  * Based on the assumption that the given amount of space
  * will be offered. Store the results in the tp structure.
@@ -244,7 +228,10 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 	if (sock_net(sk)->ipv4.sysctl_tcp_workaround_signed_windows)
 		(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
 	else
-		(*rcv_wnd) = space;
+		(*rcv_wnd) = min_t(u32, space, U16_MAX);
+
+	if (init_rcv_wnd)
+		*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
 
 	(*rcv_wscale) = 0;
 	if (wscale_ok) {
@@ -257,11 +244,6 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 			(*rcv_wscale)++;
 		}
 	}
-
-	if (!init_rcv_wnd) /* Use default unless specified otherwise */
-		init_rcv_wnd = tcp_default_init_rwnd(mss);
-	*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
-
 	/* Set the clamp no higher than max representable value */
 	(*window_clamp) = min_t(__u32, U16_MAX << (*rcv_wscale), *window_clamp);
 }
@@ -993,42 +975,34 @@ enum hrtimer_restart tcp_pace_kick(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-/* BBR congestion control needs pacing.
- * Same remark for SO_MAX_PACING_RATE.
- * sch_fq packet scheduler is efficiently handling pacing,
- * but is not always installed/used.
- * Return true if TCP stack should pace packets itself.
- */
-static bool tcp_needs_internal_pacing(const struct sock *sk)
+static void tcp_internal_pacing(struct sock *sk)
 {
-	return smp_load_acquire(&sk->sk_pacing_status) == SK_PACING_NEEDED;
-}
-
-static void tcp_internal_pacing(struct sock *sk, const struct sk_buff *skb)
-{
-	u64 len_ns;
-	u32 rate;
-
 	if (!tcp_needs_internal_pacing(sk))
 		return;
-	rate = sk->sk_pacing_rate;
-	if (!rate || rate == ~0U)
-		return;
-
-	/* Should account for header sizes as sch_fq does,
-	 * but lets make things simple.
-	 */
-	len_ns = (u64)skb->len * NSEC_PER_SEC;
-	do_div(len_ns, rate);
 	hrtimer_start(&tcp_sk(sk)->pacing_timer,
-		      ktime_add_ns(ktime_get(), len_ns),
+		      ns_to_ktime(tcp_sk(sk)->tcp_wstamp_ns),
 		      HRTIMER_MODE_ABS_PINNED_SOFT);
 	sock_hold(sk);
 }
 
-static void tcp_update_skb_after_send(struct tcp_sock *tp, struct sk_buff *skb)
+static void tcp_update_skb_after_send(struct sock *sk, struct sk_buff *skb)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+
 	skb->skb_mstamp_ns = tp->tcp_wstamp_ns;
+	if (sk->sk_pacing_status != SK_PACING_NONE) {
+		unsigned long rate = sk->sk_pacing_rate;
+
+		/* Original sch_fq does not pace first 10 MSS
+		 * Note that tp->data_segs_out overflows after 2^32 packets,
+		 * this is a minor annoyance.
+		 */
+		if (rate != ~0UL && rate && tp->data_segs_out >= 10) {
+			tp->tcp_wstamp_ns += div64_ul((u64)skb->len * NSEC_PER_SEC, rate);
+
+			tcp_internal_pacing(sk);
+		}
+	}
 	list_move_tail(&skb->tcp_tsorted_anchor, &tp->tsorted_sent_queue);
 }
 
@@ -1075,6 +1049,10 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 		if (unlikely(!skb))
 			return -ENOBUFS;
 	}
+
+	/* TODO: might take care of jitter here */
+	tp->tcp_wstamp_ns = max(tp->tcp_wstamp_ns, tp->tcp_clock_cache);
+
 	skb->skb_mstamp_ns = tp->tcp_wstamp_ns;
 
 	inet = inet_sk(sk);
@@ -1166,7 +1144,7 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	if (skb->len != tcp_header_size) {
 		tcp_event_data_sent(tp, sk);
 		tp->data_segs_out += tcp_skb_pcount(skb);
-		tcp_internal_pacing(sk, skb);
+		tp->bytes_sent += skb->len - tcp_header_size;
 	}
 
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
@@ -1191,7 +1169,7 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 		err = net_xmit_eval(err);
 	}
 	if (!err && oskb) {
-		tcp_update_skb_after_send(tp, oskb);
+		tcp_update_skb_after_send(sk, oskb);
 		tcp_rate_skb_sent(sk, oskb);
 	}
 	return err;
@@ -1726,8 +1704,9 @@ static u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
 {
 	u32 bytes, segs;
 
-	bytes = min(sk->sk_pacing_rate >> sk->sk_pacing_shift,
-		    sk->sk_gso_max_size - 1 - MAX_TCP_HEADER);
+	bytes = min_t(unsigned long,
+		      sk->sk_pacing_rate >> sk->sk_pacing_shift,
+		      sk->sk_gso_max_size - 1 - MAX_TCP_HEADER);
 
 	/* Goal is to send at least one packet per ms,
 	 * not one big TSO packet every 100 ms.
@@ -2220,10 +2199,12 @@ static bool tcp_pacing_check(const struct sock *sk)
 static bool tcp_small_queue_check(struct sock *sk, const struct sk_buff *skb,
 				  unsigned int factor)
 {
-	unsigned int limit;
+	unsigned long limit;
 
-	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> sk->sk_pacing_shift);
-	limit = min_t(u32, limit,
+	limit = max_t(unsigned long,
+		      2 * skb->truesize,
+		      sk->sk_pacing_rate >> sk->sk_pacing_shift);
+	limit = min_t(unsigned long, limit,
 		      sock_net(sk)->ipv4.sysctl_tcp_limit_output_bytes);
 	limit <<= factor;
 
@@ -2340,7 +2321,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE) {
 			/* "skb_mstamp" is used as a start point for the retransmit timer */
-			tcp_update_skb_after_send(tp, skb);
+			tcp_update_skb_after_send(sk, skb);
 			goto repair; /* Skip network transmission */
 		}
 
@@ -2726,9 +2707,8 @@ static bool tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *next_skb = skb_rb_next(skb);
-	int skb_size, next_skb_size;
+	int next_skb_size;
 
-	skb_size = skb->len;
 	next_skb_size = next_skb->len;
 
 	BUG_ON(tcp_skb_pcount(skb) != 1 || tcp_skb_pcount(next_skb) != 1);
@@ -2899,6 +2879,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 	if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)
 		__NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPSYNRETRANS);
 	tp->total_retrans += segs;
+	tp->bytes_retrans += skb->len;
 
 	/* make sure skb->data is aligned on arches that require it
 	 * and check if ack-trimming & collapsing extended the headroom
@@ -2915,7 +2896,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 		} tcp_skb_tsorted_restore(skb);
 
 		if (!err) {
-			tcp_update_skb_after_send(tp, skb);
+			tcp_update_skb_after_send(sk, skb);
 			tcp_rate_skb_sent(sk, skb);
 		}
 	} else {
