@@ -257,6 +257,9 @@ enum bpf_attach_type {
 /* Specify numa node during map creation */
 #define BPF_F_NUMA_NODE		(1U << 2)
 
+/* flags for BPF_PROG_QUERY */
+#define BPF_F_QUERY_EFFECTIVE	(1U << 0)
+
 #define BPF_OBJ_NAME_LEN 16U
 
 /* Flags for accessing BPF object */
@@ -265,12 +268,6 @@ enum bpf_attach_type {
 
 /* Flag for stack_map, store build_id+offset instead of pointer */
 #define BPF_F_STACK_BUILD_ID	(1U << 5)
-
-/* Zero-initialize hash function seed. This should only be used for testing. */
-#define BPF_F_ZERO_SEED		(1U << 6)
-
-/* flags for BPF_PROG_QUERY */
-#define BPF_F_QUERY_EFFECTIVE	(1U << 0)
 
 enum bpf_stack_build_id_status {
 	/* user space need an empty entry to identify end of a trace */
@@ -338,10 +335,6 @@ union bpf_attr {
 		 * (context accesses, allowed helpers, etc).
 		 */
 		__u32		expected_attach_type;
-		__u32		prog_btf_fd;	/* fd pointing to BTF type data */
-		__u32		func_info_rec_size;	/* userspace bpf_func_info size */
-		__aligned_u64	func_info;	/* func info */
-		__u32		func_info_cnt;	/* number of bpf_func_info records */
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -2208,8 +2201,6 @@ union bpf_attr {
  *		**CONFIG_NET** configuration option.
  *	Return
  *		Pointer to *struct bpf_sock*, or NULL in case of failure.
- *		For sockets with reuseport option, *struct bpf_sock*
- *		return is from reuse->socks[] using hash of the packet.
  *
  * struct bpf_sock *bpf_sk_lookup_udp(void *ctx, struct bpf_sock_tuple *tuple, u32 tuple_size, u32 netns, u64 flags)
  *	Description
@@ -2242,8 +2233,6 @@ union bpf_attr {
  *		**CONFIG_NET** configuration option.
  *	Return
  *		Pointer to *struct bpf_sock*, or NULL in case of failure.
- *		For sockets with reuseport option, *struct bpf_sock*
- *		return is from reuse->socks[] using hash of the packet.
  *
  * int bpf_sk_release(struct bpf_sock *sk)
  *	Description
@@ -2268,19 +2257,6 @@ union bpf_attr {
  *
  *	Return
  *		0 on success, or a negative error in case of failure.
- *
- * int bpf_msg_pop_data(struct sk_msg_buff *msg, u32 start, u32 pop, u64 flags)
- *	 Description
- *		Will remove *pop* bytes from a *msg* starting at byte *start*.
- *		This may result in **ENOMEM** errors under certain situations if
- *		an allocation and copy are required due to a full ring buffer.
- *		However, the helper will try to avoid doing the allocation
- *		if possible. Other errors can occur if input parameters are
- *		invalid either due to *start* byte not being valid part of msg
- *		payload and/or *pop* value being to large.
- *
- *	Return
- *		0 on success, or a negative erro in case of failure.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -2373,8 +2349,7 @@ union bpf_attr {
 	FN(map_push_elem),		\
 	FN(map_pop_elem),		\
 	FN(map_peek_elem),		\
-	FN(msg_push_data),		\
-	FN(msg_pop_data),
+	FN(msg_push_data),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -2447,6 +2422,12 @@ enum bpf_lwt_encap_mode {
 	BPF_LWT_ENCAP_SEG6_INLINE
 };
 
+#define __bpf_md_ptr(type, name)	\
+union {					\
+	type name;			\
+	__u64 :64;			\
+} __attribute__((aligned(8)))
+
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
  */
@@ -2481,8 +2462,7 @@ struct __sk_buff {
 	/* ... here. */
 
 	__u32 data_meta;
-	struct bpf_flow_keys *flow_keys;
-	__u64 tstamp;
+	__bpf_md_ptr(struct bpf_flow_keys *, flow_keys);
 };
 
 struct bpf_tunnel_key {
@@ -2598,8 +2578,8 @@ enum sk_action {
  * be added to the end of this structure
  */
 struct sk_msg_md {
-	void *data;
-	void *data_end;
+	__bpf_md_ptr(void *, data);
+	__bpf_md_ptr(void *, data_end);
 
 	__u32 family;
 	__u32 remote_ip4;	/* Stored in network byte order */
@@ -2615,8 +2595,9 @@ struct sk_reuseport_md {
 	 * Start of directly accessible data. It begins from
 	 * the tcp/udp header.
 	 */
-	void *data;
-	void *data_end;		/* End of directly accessible data */
+	__bpf_md_ptr(void *, data);
+	/* End of directly accessible data */
+	__bpf_md_ptr(void *, data_end);
 	/*
 	 * Total length of packet (starting from the tcp/udp header).
 	 * Note that the directly accessible bytes (data_end - data)
@@ -2657,10 +2638,6 @@ struct bpf_prog_info {
 	__u32 nr_jited_func_lens;
 	__aligned_u64 jited_ksyms;
 	__aligned_u64 jited_func_lens;
-	__u32 btf_id;
-	__u32 func_info_rec_size;
-	__aligned_u64 func_info;
-	__u32 func_info_cnt;
 } __attribute__((aligned(8)));
 
 struct bpf_map_info {
@@ -2672,6 +2649,7 @@ struct bpf_map_info {
 	__u32 map_flags;
 	char  name[BPF_OBJ_NAME_LEN];
 	__u32 ifindex;
+	__u32 :32;
 	__u64 netns_dev;
 	__u64 netns_ino;
 	__u32 btf_id;
@@ -2969,11 +2947,6 @@ struct bpf_flow_keys {
 			__u32	ipv6_dst[4];	/* in6_addr; network order */
 		};
 	};
-};
-
-struct bpf_func_info {
-	__u32	insn_offset;
-	__u32	type_id;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */
