@@ -76,7 +76,7 @@ struct bpf_test {
 	int fixup_percpu_cgroup_storage[MAX_FIXUPS];
 	const char *errstr;
 	const char *errstr_unpriv;
-	uint32_t retval;
+	uint32_t retval, retval_unpriv;
 	enum {
 		UNDEF,
 		ACCEPT,
@@ -2418,10 +2418,6 @@ static struct bpf_test tests[] = {
 				    offsetof(struct __sk_buff, tc_index)),
 			BPF_STX_MEM(BPF_W, BPF_REG_1, BPF_REG_0,
 				    offsetof(struct __sk_buff, cb[3])),
-			BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_1,
-				    offsetof(struct __sk_buff, tstamp)),
-			BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0,
-				    offsetof(struct __sk_buff, tstamp)),
 			BPF_EXIT_INSN(),
 		},
 		.errstr_unpriv = "",
@@ -2908,19 +2904,6 @@ static struct bpf_test tests[] = {
 		.result = ACCEPT,
 	},
 	{
-		"alu32: mov u32 const",
-		.insns = {
-			BPF_MOV32_IMM(BPF_REG_7, 0),
-			BPF_ALU32_IMM(BPF_AND, BPF_REG_7, 1),
-			BPF_MOV32_REG(BPF_REG_0, BPF_REG_7),
-			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 1),
-			BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_7, 0),
-			BPF_EXIT_INSN(),
-		},
-		.result = ACCEPT,
-		.retval = 0,
-	},
-	{
 		"unpriv: partial copy of pointer",
 		.insns = {
 			BPF_MOV32_REG(BPF_REG_1, BPF_REG_10),
@@ -3101,6 +3084,8 @@ static struct bpf_test tests[] = {
 		.fixup_prog1 = { 2 },
 		.result = ACCEPT,
 		.retval = 42,
+		/* Verifier rewrite for unpriv skips tail call here. */
+		.retval_unpriv = 2,
 	},
 	{
 		"stack pointer arithmetic",
@@ -5285,31 +5270,6 @@ static struct bpf_test tests[] = {
 		.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
 	},
 	{
-		"write tstamp from CGROUP_SKB",
-		.insns = {
-			BPF_MOV64_IMM(BPF_REG_0, 0),
-			BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0,
-				    offsetof(struct __sk_buff, tstamp)),
-			BPF_MOV64_IMM(BPF_REG_0, 0),
-			BPF_EXIT_INSN(),
-		},
-		.result = ACCEPT,
-		.result_unpriv = REJECT,
-		.errstr_unpriv = "invalid bpf_context access off=152 size=8",
-		.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
-	},
-	{
-		"read tstamp from CGROUP_SKB",
-		.insns = {
-			BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_1,
-				    offsetof(struct __sk_buff, tstamp)),
-			BPF_MOV64_IMM(BPF_REG_0, 0),
-			BPF_EXIT_INSN(),
-		},
-		.result = ACCEPT,
-		.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
-	},
-	{
 		"multiple registers share map_lookup_elem result",
 		.insns = {
 			BPF_MOV64_IMM(BPF_REG_1, 10),
@@ -6495,6 +6455,256 @@ static struct bpf_test tests[] = {
 		.result = REJECT,
 		.errstr = "R1 min value is negative",
 		.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	},
+	{
+		"map access: known scalar += value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),
+			BPF_MOV64_IMM(BPF_REG_1, 4),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_1, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: value_ptr += known scalar",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),
+			BPF_MOV64_IMM(BPF_REG_1, 4),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: unknown scalar += value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 4),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0xf),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_1, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: value_ptr += unknown scalar",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 4),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0xf),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: value_ptr += value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R0 pointer += pointer prohibited",
+	},
+	{
+		"map access: known scalar -= value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),
+			BPF_MOV64_IMM(BPF_REG_1, 4),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_1, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R1 tried to subtract pointer from scalar",
+	},
+	{
+		"map access: value_ptr -= known scalar",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),
+			BPF_MOV64_IMM(BPF_REG_1, 4),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R0 min value is outside of the array range",
+	},
+	{
+		"map access: value_ptr -= known scalar, 2",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 5),
+			BPF_MOV64_IMM(BPF_REG_1, 6),
+			BPF_MOV64_IMM(BPF_REG_2, 4),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_2),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: unknown scalar -= value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 4),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0xf),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_1, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R1 tried to subtract pointer from scalar",
+	},
+	{
+		"map access: value_ptr -= unknown scalar",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 4),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0xf),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R0 min value is negative",
+	},
+	{
+		"map access: value_ptr -= unknown scalar, 2",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 8),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0xf),
+			BPF_ALU64_IMM(BPF_OR, BPF_REG_1, 0x7),
+			BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 0x7),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = ACCEPT,
+		.retval = 1,
+	},
+	{
+		"map access: value_ptr -= value_ptr",
+		.insns = {
+			BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+			BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+			BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+			BPF_LD_MAP_FD(BPF_REG_1, 0),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_map_lookup_elem),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+			BPF_ALU64_REG(BPF_SUB, BPF_REG_0, BPF_REG_0),
+			BPF_LDX_MEM(BPF_B, BPF_REG_1, BPF_REG_0, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.fixup_map_array_48b = { 3 },
+		.result = REJECT,
+		.errstr = "R0 invalid mem access 'inv'",
+		.errstr_unpriv = "R0 pointer -= pointer prohibited",
 	},
 	{
 		"map lookup helper access to map",
@@ -13706,35 +13916,31 @@ static struct bpf_test tests[] = {
 		.result = ACCEPT,
 	},
 	{
-		"check wire_len is not readable by sockets",
+		"calls: cross frame pruning",
 		.insns = {
-			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
-				    offsetof(struct __sk_buff, wire_len)),
+			/* r8 = !!random();
+			 * call pruner()
+			 * if (r8)
+			 *     do something bad;
+			 */
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
+				     BPF_FUNC_get_prandom_u32),
+			BPF_MOV64_IMM(BPF_REG_8, 0),
+			BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 1),
+			BPF_MOV64_IMM(BPF_REG_8, 1),
+			BPF_MOV64_REG(BPF_REG_1, BPF_REG_8),
+			BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 1, 0, 4),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 1, 1),
+			BPF_LDX_MEM(BPF_B, BPF_REG_9, BPF_REG_1, 0),
+			BPF_MOV64_IMM(BPF_REG_0, 0),
+			BPF_EXIT_INSN(),
+			BPF_JMP_IMM(BPF_JEQ, BPF_REG_1, 0, 0),
 			BPF_EXIT_INSN(),
 		},
-		.errstr = "invalid bpf_context access",
-		.result = REJECT,
-	},
-	{
-		"check wire_len is readable by tc classifier",
-		.insns = {
-			BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1,
-				    offsetof(struct __sk_buff, wire_len)),
-			BPF_EXIT_INSN(),
-		},
-		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
-		.result = ACCEPT,
-	},
-	{
-		"check wire_len is not writable by tc classifier",
-		.insns = {
-			BPF_STX_MEM(BPF_W, BPF_REG_1, BPF_REG_1,
-				    offsetof(struct __sk_buff, wire_len)),
-			BPF_EXIT_INSN(),
-		},
-		.prog_type = BPF_PROG_TYPE_SCHED_CLS,
-		.errstr = "invalid bpf_context access",
-		.errstr_unpriv = "R1 leaks addr",
+		.prog_type = BPF_PROG_TYPE_SOCKET_FILTER,
+		.errstr_unpriv = "function calls to other bpf functions are allowed for root only",
+		.result_unpriv = REJECT,
+		.errstr = "!read_ok",
 		.result = REJECT,
 	},
 };
@@ -13762,7 +13968,7 @@ static int create_map(uint32_t type, uint32_t size_key,
 	return fd;
 }
 
-static int create_prog_dummy1(enum bpf_map_type prog_type)
+static int create_prog_dummy1(enum bpf_prog_type prog_type)
 {
 	struct bpf_insn prog[] = {
 		BPF_MOV64_IMM(BPF_REG_0, 42),
@@ -13773,7 +13979,7 @@ static int create_prog_dummy1(enum bpf_map_type prog_type)
 				ARRAY_SIZE(prog), "GPL", 0, NULL, 0);
 }
 
-static int create_prog_dummy2(enum bpf_map_type prog_type, int mfd, int idx)
+static int create_prog_dummy2(enum bpf_prog_type prog_type, int mfd, int idx)
 {
 	struct bpf_insn prog[] = {
 		BPF_MOV64_IMM(BPF_REG_3, idx),
@@ -13788,7 +13994,7 @@ static int create_prog_dummy2(enum bpf_map_type prog_type, int mfd, int idx)
 				ARRAY_SIZE(prog), "GPL", 0, NULL, 0);
 }
 
-static int create_prog_array(enum bpf_map_type prog_type, uint32_t max_elem,
+static int create_prog_array(enum bpf_prog_type prog_type, uint32_t max_elem,
 			     int p1key)
 {
 	int p2key = 1;
@@ -13859,7 +14065,7 @@ static int create_cgroup_storage(bool percpu)
 
 static char bpf_vlog[UINT_MAX >> 8];
 
-static void do_test_fixup(struct bpf_test *test, enum bpf_map_type prog_type,
+static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 			  struct bpf_insn *prog, int *map_fds)
 {
 	int *fixup_map_hash_8b = test->fixup_map_hash_8b;
@@ -13988,8 +14194,35 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_map_type prog_type,
 		do {
 			prog[*fixup_map_stacktrace].imm = map_fds[12];
 			fixup_map_stacktrace++;
-		} while (fixup_map_stacktrace);
+		} while (*fixup_map_stacktrace);
 	}
+}
+
+static int set_admin(bool admin)
+{
+	cap_t caps;
+	const cap_value_t cap_val = CAP_SYS_ADMIN;
+	int ret = -1;
+
+	caps = cap_get_proc();
+	if (!caps) {
+		perror("cap_get_proc");
+		return -1;
+	}
+	if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &cap_val,
+				admin ? CAP_SET : CAP_CLEAR)) {
+		perror("cap_set_flag");
+		goto out;
+	}
+	if (cap_set_proc(caps)) {
+		perror("cap_set_proc");
+		goto out;
+	}
+	ret = 0;
+out:
+	if (cap_free(caps))
+		perror("cap_free");
+	return ret;
 }
 
 static void do_test_single(struct bpf_test *test, bool unpriv,
@@ -14000,6 +14233,7 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 	struct bpf_insn *prog = test->insns;
 	int map_fds[MAX_NR_MAPS];
 	const char *expected_err;
+	uint32_t expected_val;
 	uint32_t retval;
 	int i, err;
 
@@ -14012,18 +14246,19 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 	prog_len = probe_filter_length(prog);
 
 	fd_prog = bpf_verify_program(prog_type, prog, prog_len,
-				     test->flags & F_LOAD_WITH_STRICT_ALIGNMENT ?
-				     BPF_F_STRICT_ALIGNMENT : 0,
+				     test->flags & F_LOAD_WITH_STRICT_ALIGNMENT,
 				     "GPL", 0, bpf_vlog, sizeof(bpf_vlog), 1);
 
 	expected_ret = unpriv && test->result_unpriv != UNDEF ?
 		       test->result_unpriv : test->result;
 	expected_err = unpriv && test->errstr_unpriv ?
 		       test->errstr_unpriv : test->errstr;
+	expected_val = unpriv && test->retval_unpriv ?
+		       test->retval_unpriv : test->retval;
 
 	reject_from_alignment = fd_prog < 0 &&
 				(test->flags & F_NEEDS_EFFICIENT_UNALIGNED_ACCESS) &&
-				strstr(bpf_vlog, "Unknown alignment.");
+				strstr(bpf_vlog, "misaligned");
 #ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
 	if (reject_from_alignment) {
 		printf("FAIL\nFailed due to alignment despite having efficient unaligned access: '%s'!\n",
@@ -14053,16 +14288,20 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 		__u8 tmp[TEST_DATA_LEN << 2];
 		__u32 size_tmp = sizeof(tmp);
 
+		if (unpriv)
+			set_admin(true);
 		err = bpf_prog_test_run(fd_prog, 1, test->data,
 					sizeof(test->data), tmp, &size_tmp,
 					&retval, NULL);
+		if (unpriv)
+			set_admin(false);
 		if (err && errno != 524/*ENOTSUPP*/ && errno != EPERM) {
 			printf("Unexpected bpf_prog_test_run error\n");
 			goto fail_log;
 		}
-		if (!err && retval != test->retval &&
-		    test->retval != POINTER_VALUE) {
-			printf("FAIL retval %d != %d\n", retval, test->retval);
+		if (!err && retval != expected_val &&
+		    expected_val != POINTER_VALUE) {
+			printf("FAIL retval %d != %d\n", retval, expected_val);
 			goto fail_log;
 		}
 	}
@@ -14103,33 +14342,6 @@ static bool is_admin(void)
 	if (cap_free(caps))
 		perror("cap_free");
 	return (sysadmin == CAP_SET);
-}
-
-static int set_admin(bool admin)
-{
-	cap_t caps;
-	const cap_value_t cap_val = CAP_SYS_ADMIN;
-	int ret = -1;
-
-	caps = cap_get_proc();
-	if (!caps) {
-		perror("cap_get_proc");
-		return -1;
-	}
-	if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &cap_val,
-				admin ? CAP_SET : CAP_CLEAR)) {
-		perror("cap_set_flag");
-		goto out;
-	}
-	if (cap_set_proc(caps)) {
-		perror("cap_set_proc");
-		goto out;
-	}
-	ret = 0;
-out:
-	if (cap_free(caps))
-		perror("cap_free");
-	return ret;
 }
 
 static void get_unpriv_disabled()
