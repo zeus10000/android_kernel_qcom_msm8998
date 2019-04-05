@@ -45,6 +45,7 @@
 #include <net/nexthop.h>
 #include <net/lwtunnel.h>
 #include <net/fib_notifier.h>
+#include <net/addrconf.h>
 
 #include "fib_lookup.h"
 
@@ -204,16 +205,22 @@ static void rt_fibinfo_free_cpus(struct rtable __rcu * __percpu *rtp)
 	free_percpu(rtp);
 }
 
+void fib_nh_common_release(struct fib_nh_common *nhc)
+{
+	if (nhc->nhc_dev)
+		dev_put(nhc->nhc_dev);
+
+	lwtstate_put(nhc->nhc_lwtstate);
+}
+EXPORT_SYMBOL_GPL(fib_nh_common_release);
+
 void fib_nh_release(struct net *net, struct fib_nh *fib_nh)
 {
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	if (fib_nh->nh_tclassid)
 		net->ipv4.fib_num_tclassid_users--;
 #endif
-	if (fib_nh->fib_nh_dev)
-		dev_put(fib_nh->fib_nh_dev);
-
-	lwtstate_put(fib_nh->fib_nh_lws);
+	fib_nh_common_release(&fib_nh->nh_common);
 	free_nh_exceptions(fib_nh);
 	rt_fibinfo_free_cpus(fib_nh->nh_pcpu_rth_output);
 	rt_fibinfo_free(&fib_nh->nh_rth_input);
@@ -462,35 +469,52 @@ static int fib_detect_death(struct fib_info *fi, int order,
 	return 1;
 }
 
+int fib_nh_common_init(struct fib_nh_common *nhc, struct nlattr *encap,
+		       u16 encap_type, void *cfg, gfp_t gfp_flags,
+		       struct netlink_ext_ack *extack)
+{
+	if (encap) {
+		struct lwtunnel_state *lwtstate;
+		int err;
+
+		if (encap_type == LWTUNNEL_ENCAP_NONE) {
+			NL_SET_ERR_MSG(extack, "LWT encap type not specified");
+			return -EINVAL;
+		}
+		err = lwtunnel_build_state(encap_type, encap, nhc->nhc_family,
+					   cfg, &lwtstate, extack);
+		if (err)
+			return err;
+
+		nhc->nhc_lwtstate = lwtstate_get(lwtstate);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(fib_nh_common_init);
+
 int fib_nh_init(struct net *net, struct fib_nh *nh,
 		struct fib_config *cfg, int nh_weight,
 		struct netlink_ext_ack *extack)
 {
 	int err = -ENOMEM;
 
+	nh->fib_nh_family = AF_INET;
+
 	nh->nh_pcpu_rth_output = alloc_percpu(struct rtable __rcu *);
 	if (!nh->nh_pcpu_rth_output)
 		goto err_out;
 
-	if (cfg->fc_encap) {
-		struct lwtunnel_state *lwtstate;
-
-		err = -EINVAL;
-		if (cfg->fc_encap_type == LWTUNNEL_ENCAP_NONE) {
-			NL_SET_ERR_MSG(extack, "LWT encap type not specified");
-			goto lwt_failure;
-		}
-		err = lwtunnel_build_state(cfg->fc_encap_type,
-					   cfg->fc_encap, AF_INET, cfg,
-					   &lwtstate, extack);
-		if (err)
-			goto lwt_failure;
-
-		nh->fib_nh_lws = lwtstate_get(lwtstate);
-	}
+	err = fib_nh_common_init(&nh->nh_common, cfg->fc_encap,
+				 cfg->fc_encap_type, cfg, GFP_KERNEL, extack);
+	if (err)
+		goto init_failure;
 
 	nh->fib_nh_oif = cfg->fc_oif;
-	nh->fib_nh_gw4 = cfg->fc_gw;
+	if (cfg->fc_gw) {
+		nh->fib_nh_gw4 = cfg->fc_gw;
+		nh->fib_nh_gw_family = AF_INET;
+	}
 	nh->fib_nh_flags = cfg->fc_flags;
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
@@ -503,7 +527,7 @@ int fib_nh_init(struct net *net, struct fib_nh *nh,
 #endif
 	return 0;
 
-lwt_failure:
+init_failure:
 	rt_fibinfo_free_cpus(nh->nh_pcpu_rth_output);
 	nh->nh_pcpu_rth_output = NULL;
 err_out:
@@ -1214,7 +1238,7 @@ struct fib_info *fib_create_info(struct fib_config *cfg,
 				       "Route with host scope can not have multiple nexthops");
 			goto err_inval;
 		}
-		if (nh->fib_nh_gw4) {
+		if (nh->fib_nh_gw_family) {
 			NL_SET_ERR_MSG(extack,
 				       "Route with host scope can not have a gateway");
 			goto err_inval;
@@ -1294,6 +1318,123 @@ failure:
 	return ERR_PTR(err);
 }
 
+int fib_nexthop_info(struct sk_buff *skb, const struct fib_nh_common *nhc,
+		     unsigned int *flags, bool skip_oif)
+{
+	if (nhc->nhc_flags & RTNH_F_DEAD)
+		*flags |= RTNH_F_DEAD;
+
+	if (nhc->nhc_flags & RTNH_F_LINKDOWN) {
+		*flags |= RTNH_F_LINKDOWN;
+
+		rcu_read_lock();
+		switch (nhc->nhc_family) {
+		case AF_INET:
+			if (ip_ignore_linkdown(nhc->nhc_dev))
+				*flags |= RTNH_F_DEAD;
+			break;
+		case AF_INET6:
+			if (ip6_ignore_linkdown(nhc->nhc_dev))
+				*flags |= RTNH_F_DEAD;
+			break;
+		}
+		rcu_read_unlock();
+	}
+
+	switch (nhc->nhc_gw_family) {
+	case AF_INET:
+		if (nla_put_in_addr(skb, RTA_GATEWAY, nhc->nhc_gw.ipv4))
+			goto nla_put_failure;
+		break;
+	case AF_INET6:
+		if (nla_put_in6_addr(skb, RTA_GATEWAY, &nhc->nhc_gw.ipv6) < 0)
+			goto nla_put_failure;
+		break;
+	}
+
+	*flags |= (nhc->nhc_flags & RTNH_F_ONLINK);
+	if (nhc->nhc_flags & RTNH_F_OFFLOAD)
+		*flags |= RTNH_F_OFFLOAD;
+
+	if (!skip_oif && nhc->nhc_dev &&
+	    nla_put_u32(skb, RTA_OIF, nhc->nhc_dev->ifindex))
+		goto nla_put_failure;
+
+	if (nhc->nhc_lwtstate &&
+	    lwtunnel_fill_encap(skb, nhc->nhc_lwtstate) < 0)
+		goto nla_put_failure;
+
+	return 0;
+
+nla_put_failure:
+	return -EMSGSIZE;
+}
+EXPORT_SYMBOL_GPL(fib_nexthop_info);
+
+#if IS_ENABLED(CONFIG_IP_ROUTE_MULTIPATH) || IS_ENABLED(CONFIG_IPV6)
+int fib_add_nexthop(struct sk_buff *skb, const struct fib_nh_common *nhc,
+		    int nh_weight)
+{
+	const struct net_device *dev = nhc->nhc_dev;
+	struct rtnexthop *rtnh;
+	unsigned int flags = 0;
+
+	rtnh = nla_reserve_nohdr(skb, sizeof(*rtnh));
+	if (!rtnh)
+		goto nla_put_failure;
+
+	rtnh->rtnh_hops = nh_weight - 1;
+	rtnh->rtnh_ifindex = dev ? dev->ifindex : 0;
+
+	if (fib_nexthop_info(skb, nhc, &flags, true) < 0)
+		goto nla_put_failure;
+
+	rtnh->rtnh_flags = flags;
+
+	/* length of rtnetlink header + attributes */
+	rtnh->rtnh_len = nlmsg_get_pos(skb) - (void *)rtnh;
+
+	return 0;
+
+nla_put_failure:
+	return -EMSGSIZE;
+}
+EXPORT_SYMBOL_GPL(fib_add_nexthop);
+#endif
+
+#ifdef CONFIG_IP_ROUTE_MULTIPATH
+static int fib_add_multipath(struct sk_buff *skb, struct fib_info *fi)
+{
+	struct nlattr *mp;
+
+	mp = nla_nest_start(skb, RTA_MULTIPATH);
+	if (!mp)
+		goto nla_put_failure;
+
+	for_nexthops(fi) {
+		if (fib_add_nexthop(skb, &nh->nh_common, nh->fib_nh_weight) < 0)
+			goto nla_put_failure;
+#ifdef CONFIG_IP_ROUTE_CLASSID
+		if (nh->nh_tclassid &&
+		    nla_put_u32(skb, RTA_FLOW, nh->nh_tclassid))
+			goto nla_put_failure;
+#endif
+	} endfor_nexthops(fi);
+
+	nla_nest_end(skb, mp);
+
+	return 0;
+
+nla_put_failure:
+	return -EMSGSIZE;
+}
+#else
+static int fib_add_multipath(struct sk_buff *skb, struct fib_info *fi)
+{
+	return 0;
+}
+#endif
+
 int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
 		  u32 tb_id, u8 type, __be32 dst, int dst_len, u8 tos,
 		  struct fib_info *fi, unsigned int flags)
@@ -1334,72 +1475,23 @@ int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
 	    nla_put_in_addr(skb, RTA_PREFSRC, fi->fib_prefsrc))
 		goto nla_put_failure;
 	if (fi->fib_nhs == 1) {
-		if (fi->fib_nh->fib_nh_gw4 &&
-		    nla_put_in_addr(skb, RTA_GATEWAY, fi->fib_nh->fib_nh_gw4))
+		struct fib_nh *nh = &fi->fib_nh[0];
+		unsigned int flags = 0;
+
+		if (fib_nexthop_info(skb, &nh->nh_common, &flags, false) < 0)
 			goto nla_put_failure;
-		if (fi->fib_nh->fib_nh_oif &&
-		    nla_put_u32(skb, RTA_OIF, fi->fib_nh->fib_nh_oif))
-			goto nla_put_failure;
-		if (fi->fib_nh->fib_nh_flags & RTNH_F_LINKDOWN) {
-			rcu_read_lock();
-			if (ip_ignore_linkdown(fi->fib_nh->fib_nh_dev))
-				rtm->rtm_flags |= RTNH_F_DEAD;
-			rcu_read_unlock();
-		}
-		if (fi->fib_nh->fib_nh_flags & RTNH_F_OFFLOAD)
-			rtm->rtm_flags |= RTNH_F_OFFLOAD;
+
+		rtm->rtm_flags = flags;
 #ifdef CONFIG_IP_ROUTE_CLASSID
-		if (fi->fib_nh[0].nh_tclassid &&
-		    nla_put_u32(skb, RTA_FLOW, fi->fib_nh[0].nh_tclassid))
+		if (nh->nh_tclassid &&
+		    nla_put_u32(skb, RTA_FLOW, nh->nh_tclassid))
 			goto nla_put_failure;
 #endif
-		if (fi->fib_nh->fib_nh_lws &&
-		    lwtunnel_fill_encap(skb, fi->fib_nh->fib_nh_lws) < 0)
+	} else {
+		if (fib_add_multipath(skb, fi) < 0)
 			goto nla_put_failure;
 	}
-#ifdef CONFIG_IP_ROUTE_MULTIPATH
-	if (fi->fib_nhs > 1) {
-		struct rtnexthop *rtnh;
-		struct nlattr *mp;
 
-		mp = nla_nest_start(skb, RTA_MULTIPATH);
-		if (!mp)
-			goto nla_put_failure;
-
-		for_nexthops(fi) {
-			rtnh = nla_reserve_nohdr(skb, sizeof(*rtnh));
-			if (!rtnh)
-				goto nla_put_failure;
-
-			rtnh->rtnh_flags = nh->fib_nh_flags & 0xFF;
-			if (nh->fib_nh_flags & RTNH_F_LINKDOWN) {
-				rcu_read_lock();
-				if (ip_ignore_linkdown(nh->fib_nh_dev))
-					rtnh->rtnh_flags |= RTNH_F_DEAD;
-				rcu_read_unlock();
-			}
-			rtnh->rtnh_hops = nh->fib_nh_weight - 1;
-			rtnh->rtnh_ifindex = nh->fib_nh_oif;
-
-			if (nh->fib_nh_gw4 &&
-			    nla_put_in_addr(skb, RTA_GATEWAY, nh->fib_nh_gw4))
-				goto nla_put_failure;
-#ifdef CONFIG_IP_ROUTE_CLASSID
-			if (nh->nh_tclassid &&
-			    nla_put_u32(skb, RTA_FLOW, nh->nh_tclassid))
-				goto nla_put_failure;
-#endif
-			if (nh->fib_nh_lws &&
-			    lwtunnel_fill_encap(skb, nh->fib_nh_lws) < 0)
-				goto nla_put_failure;
-
-			/* length of rtnetlink header + attributes */
-			rtnh->rtnh_len = nlmsg_get_pos(skb) - (void *) rtnh;
-		} endfor_nexthops(fi);
-
-		nla_nest_end(skb, mp);
-	}
-#endif
 	nlmsg_end(skb, nlh);
 	return 0;
 
