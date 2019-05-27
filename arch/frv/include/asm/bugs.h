@@ -1,14 +1,9 @@
-/* bugs.h: arch bug checking entry
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * Copyright (C) IBM Corporation 2016.
  *
- * Copyright (C) 2003 Red Hat, Inc. All Rights Reserved.
- * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
+ * This file is only necessary because some of the pre-boot decompressors
+ * expect stdint.h to be available.
  */
 
-static inline void check_bugs(void)
-{
-}
+#include "types.h"
