@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * i2c driver for hmc5843/5843/5883/5883l/5983
  *
  * Split from hmc5843.c
  * Copyright (C) Josef Gajdusek <atx@atx.name>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * */
+ */
 
 #include <linux/module.h>
 #include <linux/i2c.h>

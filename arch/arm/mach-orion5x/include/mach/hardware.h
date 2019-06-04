@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * arch/arm/mach-orion5x/include/mach/hardware.h
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2015 Broadcom
  */
 
-#ifndef __ASM_ARCH_HARDWARE_H
-#define __ASM_ARCH_HARDWARE_H
+#include "vc4_drv.h"
 
-#include "orion5x.h"
-
+#ifndef __CHECKER__
+#define CREATE_TRACE_POINTS
+#include "vc4_trace.h"
 #endif

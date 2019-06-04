@@ -1,12 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * SDRC register values for Nokia boards
- *
- * Copyright (C) 2010 Nokia
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (c) 2018 Rockchip Electronics Co. Ltd.
  */
 
-struct omap_sdrc_params *nokia_get_sdram_timings(void);
+#ifndef _ROCKCHIP_PCM_H
+#define _ROCKCHIP_PCM_H
 
+int rockchip_pcm_platform_register(struct device *dev);
+
+#endif

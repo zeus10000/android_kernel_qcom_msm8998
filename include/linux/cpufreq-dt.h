@@ -1,22 +1,21 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2014 Marvell
- * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2016 Linaro
+ * Viresh Kumar <viresh.kumar@linaro.org>
  */
 
 #ifndef __CPUFREQ_DT_H__
 #define __CPUFREQ_DT_H__
 
+#include <linux/types.h>
+
+struct cpufreq_policy;
+
 struct cpufreq_dt_platform_data {
-	/*
-	 * True when each CPU has its own clock to control its
-	 * frequency, false when all CPUs are controlled by a single
-	 * clock.
-	 */
-	bool independent_clocks;
+	bool have_governor_per_policy;
+
+	int (*suspend)(struct cpufreq_policy *policy);
+	int (*resume)(struct cpufreq_policy *policy);
 };
 
 #endif /* __CPUFREQ_DT_H__ */
