@@ -519,6 +519,9 @@ static inline int may_allow_all(struct dev_cgroup *parent)
  * This function is responsible for re-evaluating all the cgroup's active
  * exceptions due to a parent's exception change.
  * Refer to Documentation/cgroup-v1/devices.rst for more details.
+=======
+ * Refer to Documentation/admin-guide/cgroup-v1/devices.rst for more details.
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book)
  */
 static void revalidate_active_exceptions(struct dev_cgroup *devcg)
 {

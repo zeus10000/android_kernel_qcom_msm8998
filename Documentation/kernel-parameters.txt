@@ -3526,10 +3526,14 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	relax_domain_level=
 			[KNL, SMP] Set scheduler's default relax_domain_level.
 <<<<<<< HEAD:Documentation/kernel-parameters.txt
+<<<<<<< HEAD:Documentation/kernel-parameters.txt
 			See Documentation/cgroups/cpusets.txt.
 =======
 			See Documentation/cgroup-v1/cpusets.rst.
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):Documentation/admin-guide/kernel-parameters.txt
+=======
+			See Documentation/admin-guide/cgroup-v1/cpusets.rst.
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):Documentation/admin-guide/kernel-parameters.txt
 
 	relative_sleep_states=
 			[SUSPEND] Use sleep state labeling where the deepest
@@ -3976,10 +3980,14 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			[KNL] Enable accounting of swap in memory resource
 			controller if no parameter or 1 is given or disable
 <<<<<<< HEAD:Documentation/kernel-parameters.txt
+<<<<<<< HEAD:Documentation/kernel-parameters.txt
 			it if 0 is given (See Documentation/cgroups/memory.txt)
 =======
 			it if 0 is given (See Documentation/cgroup-v1/memory.rst)
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):Documentation/admin-guide/kernel-parameters.txt
+=======
+			it if 0 is given (See Documentation/admin-guide/cgroup-v1/memory.rst)
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):Documentation/admin-guide/kernel-parameters.txt
 
 	swiotlb=	[ARM,IA-64,PPC,MIPS,X86]
 			Format: { <int> | force }

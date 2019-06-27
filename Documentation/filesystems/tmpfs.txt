@@ -99,6 +99,9 @@ use at file creation time.  When a task allocates a file in the file
 system, the mount option memory policy will be applied with a NodeList,
 if any, modified by the calling task's cpuset constraints
 [See Documentation/cgroup-v1/cpusets.rst] and any optional flags, listed
+=======
+[See Documentation/admin-guide/cgroup-v1/cpusets.rst] and any optional flags, listed
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book)
 below.  If the resulting NodeLists is the empty set, the effective memory
 policy for the file will revert to "default" policy.
 

@@ -64,10 +64,14 @@ physical memory.  NUMA emluation is useful for testing NUMA kernel and
 application features on non-NUMA platforms, and as a sort of memory resource
 management mechanism when used together with cpusets.
 <<<<<<< HEAD:Documentation/vm/numa
+<<<<<<< HEAD:Documentation/vm/numa
 [see Documentation/cgroups/cpusets.txt]
 =======
 [see Documentation/cgroup-v1/cpusets.rst]
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):Documentation/vm/numa.rst
+=======
+[see Documentation/admin-guide/cgroup-v1/cpusets.rst]
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):Documentation/vm/numa.rst
 
 For each node with memory, Linux constructs an independent memory management
 subsystem, complete with its own free page lists, in-use page lists, usage
@@ -118,10 +122,14 @@ allocation behavior using Linux NUMA memory policy.
 System administrators can restrict the CPUs and nodes' memories that a non-
 privileged user can specify in the scheduling or NUMA commands and functions
 <<<<<<< HEAD:Documentation/vm/numa
+<<<<<<< HEAD:Documentation/vm/numa
 using control groups and CPUsets.  [see Documentation/cgroups/cpusets.txt]
 =======
 using control groups and CPUsets.  [see Documentation/cgroup-v1/cpusets.rst]
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):Documentation/vm/numa.rst
+=======
+using control groups and CPUsets.  [see Documentation/admin-guide/cgroup-v1/cpusets.rst]
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):Documentation/vm/numa.rst
 
 On architectures that do not hide memoryless nodes, Linux will include only
 zones [nodes] with memory in the zonelists.  This means that for a memoryless

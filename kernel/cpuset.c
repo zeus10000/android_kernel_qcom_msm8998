@@ -593,10 +593,14 @@ static void update_domain_attr_tree(struct sched_domain_attr *dattr,
  * partition.
  *
 <<<<<<< HEAD:kernel/cpuset.c
+<<<<<<< HEAD:kernel/cpuset.c
  * See "What is sched_load_balance" in Documentation/cgroups/cpusets.txt
 =======
  * See "What is sched_load_balance" in Documentation/cgroup-v1/cpusets.rst
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):kernel/cgroup/cpuset.c
+=======
+ * See "What is sched_load_balance" in Documentation/admin-guide/cgroup-v1/cpusets.rst
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):kernel/cgroup/cpuset.c
  * for a background explanation of this.
  *
  * Does not return errors, on the theory that the callers of this

@@ -39,10 +39,14 @@ Larger installations usually partition the system using cpusets into
 sections of nodes. Paul Jackson has equipped cpusets with the ability to
 move pages when a task is moved to another cpuset (See
 <<<<<<< HEAD:Documentation/vm/page_migration
+<<<<<<< HEAD:Documentation/vm/page_migration
 Documentation/cgroups/cpusets.txt).
 =======
 Documentation/cgroup-v1/cpusets.rst).
 >>>>>>> 99c8b231ae6c (docs: cgroup-v1: convert docs to ReST and rename to *.rst):Documentation/vm/page_migration.rst
+=======
+Documentation/admin-guide/cgroup-v1/cpusets.rst).
+>>>>>>> da82c92f1150 (docs: cgroup-v1: add it to the admin-guide book):Documentation/vm/page_migration.rst
 Cpusets allows the automation of process locality. If a task is moved to
 a new cpuset then also all its pages are moved with it so that the
 performance of the process does not sink dramatically. Also the pages
