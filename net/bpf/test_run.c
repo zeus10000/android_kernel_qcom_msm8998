@@ -11,6 +11,9 @@
 #include <net/sock.h>
 #include <net/tcp.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/bpf_test_run.h>
+
 static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 			u32 *retval, u32 *time)
 {
@@ -98,6 +101,7 @@ static int bpf_test_finish(const union bpf_attr *kattr,
 	if (err != -ENOSPC)
 		err = 0;
 out:
+	trace_bpf_test_finish(&err);
 	return err;
 }
 
@@ -346,6 +350,9 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 	void *data;
 	int ret;
 
+	if (kattr->test.ctx_in || kattr->test.ctx_out)
+		return -EINVAL;
+
 	data = bpf_test_init(kattr, size, XDP_PACKET_HEADROOM + NET_IP_ALIGN, 0);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
@@ -375,12 +382,12 @@ int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
 				     union bpf_attr __user *uattr)
 {
 	u32 size = kattr->test.data_size_in;
+	struct bpf_flow_dissector ctx = {};
 	u32 repeat = kattr->test.repeat;
 	struct bpf_flow_keys flow_keys;
 	u64 time_start, time_spent = 0;
+	const struct ethhdr *eth;
 	u32 retval, duration;
-	struct sk_buff *skb;
-	struct sock *sk;
 	void *data;
 	int ret;
 	u32 i;
@@ -388,43 +395,31 @@ int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
 	if (prog->type != BPF_PROG_TYPE_FLOW_DISSECTOR)
 		return -EINVAL;
 
-	data = bpf_test_init(kattr, size, NET_SKB_PAD + NET_IP_ALIGN,
-			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)));
+	if (kattr->test.ctx_in || kattr->test.ctx_out)
+		return -EINVAL;
+
+	if (size < ETH_HLEN)
+		return -EINVAL;
+
+	data = bpf_test_init(kattr, size, 0, 0);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	sk = kzalloc(sizeof(*sk), GFP_USER);
-	if (!sk) {
-		kfree(data);
-		return -ENOMEM;
-	}
-	sock_net_set(sk, current->nsproxy->net_ns);
-	sock_init_data(NULL, sk);
-
-	skb = build_skb(data, 0);
-	if (!skb) {
-		kfree(data);
-		kfree(sk);
-		return -ENOMEM;
-	}
-	skb->sk = sk;
-
-	skb_reserve(skb, NET_SKB_PAD + NET_IP_ALIGN);
-	__skb_put(skb, size);
-	skb->protocol = eth_type_trans(skb,
-				       current->nsproxy->net_ns->loopback_dev);
-	skb_reset_network_header(skb);
+	eth = (struct ethhdr *)data;
 
 	if (!repeat)
 		repeat = 1;
+
+	ctx.flow_keys = &flow_keys;
+	ctx.data = data;
+	ctx.data_end = (__u8 *)data + size;
 
 	rcu_read_lock();
 	preempt_disable();
 	time_start = ktime_get_ns();
 	for (i = 0; i < repeat; i++) {
-		retval = __skb_flow_bpf_dissect(prog, skb,
-						&flow_keys_dissector,
-						&flow_keys);
+		retval = bpf_flow_dissect(prog, &ctx, eth->h_proto, ETH_HLEN,
+					  size, 0);
 
 		if (signal_pending(current)) {
 			preempt_enable();
@@ -457,7 +452,6 @@ int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
 			      retval, duration);
 
 out:
-	kfree_skb(skb);
-	kfree(sk);
+	kfree(data);
 	return ret;
 }
