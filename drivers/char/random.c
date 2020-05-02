@@ -256,7 +256,6 @@
 #include <linux/spinlock.h>
 #include <linux/kthread.h>
 #include <linux/percpu.h>
-#include <linux/cryptohash.h>
 #include <linux/fips.h>
 #include <linux/ptrace.h>
 #include <linux/workqueue.h>
@@ -265,7 +264,8 @@
 #include <linux/syscalls.h>
 #include <linux/completion.h>
 #include <linux/uuid.h>
-#include <crypto/chacha20.h>
+#include <crypto/chacha.h>
+#include <crypto/sha.h>
 
 #include <asm/processor.h>
 #include <linux/uaccess.h>
