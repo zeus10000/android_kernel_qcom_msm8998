@@ -263,7 +263,7 @@ static int FNAME(walk_addr_generic)(struct guest_walker *walker,
 {
 	int ret;
 	pt_element_t pte;
-	pt_element_t __user *uninitialized_var(ptep_user);
+	pt_element_t __user *ptep_user;
 	gfn_t table_gfn;
 	unsigned index, pt_access, pte_access, accessed_dirty;
 	gpa_t pte_gpa;
