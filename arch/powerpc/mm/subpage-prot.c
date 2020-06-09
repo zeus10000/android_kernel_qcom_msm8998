@@ -7,12 +7,12 @@
 #include <linux/kernel.h>
 #include <linux/gfp.h>
 #include <linux/types.h>
-#include <linux/mm.h>
+#include <linux/pagewalk.h>
 #include <linux/hugetlb.h>
+#include <linux/syscalls.h>
 
 #include <linux/pgtable.h>
 #include <linux/uaccess.h>
-#include <asm/tlbflush.h>
 
 /*
  * Free all pages allocated for subpage protection maps and pointers.
@@ -21,9 +21,12 @@
  */
 void subpage_prot_free(struct mm_struct *mm)
 {
-	struct subpage_prot_table *spt = &mm->context.spt;
+	struct subpage_prot_table *spt = mm_ctx_subpage_prot(&mm->context);
 	unsigned long i, j, addr;
 	u32 **p;
+
+	if (!spt)
+		return;
 
 	for (i = 0; i < 4; ++i) {
 		if (spt->low_prot[i]) {
@@ -32,7 +35,7 @@ void subpage_prot_free(struct mm_struct *mm)
 		}
 	}
 	addr = 0;
-	for (i = 0; i < 2; ++i) {
+	for (i = 0; i < (TASK_SIZE_USER64 >> 43); ++i) {
 		p = spt->protptrs[i];
 		if (!p)
 			continue;
@@ -44,28 +47,24 @@ void subpage_prot_free(struct mm_struct *mm)
 		free_page((unsigned long)p);
 	}
 	spt->maxaddr = 0;
-}
-
-void subpage_prot_init_new_context(struct mm_struct *mm)
-{
-	struct subpage_prot_table *spt = &mm->context.spt;
-
-	memset(spt, 0, sizeof(*spt));
+	kfree(spt);
 }
 
 static void hpte_flush_range(struct mm_struct *mm, unsigned long addr,
 			     int npages)
 {
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
 	spinlock_t *ptl;
 
 	pgd = pgd_offset(mm, addr);
-	if (pgd_none(*pgd))
+	p4d = p4d_offset(pgd, addr);
+	if (p4d_none(*p4d))
 		return;
-	pud = pud_offset(pgd, addr);
+	pud = pud_offset(p4d, addr);
 	if (pud_none(*pud))
 		return;
 	pmd = pmd_offset(pud, addr);
@@ -89,13 +88,18 @@ static void hpte_flush_range(struct mm_struct *mm, unsigned long addr,
 static void subpage_prot_clear(unsigned long addr, unsigned long len)
 {
 	struct mm_struct *mm = current->mm;
-	struct subpage_prot_table *spt = &mm->context.spt;
+	struct subpage_prot_table *spt;
 	u32 **spm, *spp;
 	unsigned long i;
 	size_t nw;
 	unsigned long next, limit;
 
-	down_write(&mm->mmap_sem);
+	mmap_write_lock(mm);
+
+	spt = mm_ctx_subpage_prot(&mm->context);
+	if (!spt)
+		goto err_out;
+
 	limit = addr + len;
 	if (limit > spt->maxaddr)
 		limit = spt->maxaddr;
@@ -123,7 +127,9 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 		/* now flush any existing HPTEs for the range */
 		hpte_flush_range(mm, addr, nw);
 	}
-	up_write(&mm->mmap_sem);
+
+err_out:
+	mmap_write_unlock(mm);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -131,18 +137,18 @@ static int subpage_walk_pmd_entry(pmd_t *pmd, unsigned long addr,
 				  unsigned long end, struct mm_walk *walk)
 {
 	struct vm_area_struct *vma = walk->vma;
-	split_huge_page_pmd(vma, addr, pmd);
+	split_huge_pmd(vma, pmd, addr);
 	return 0;
 }
+
+static const struct mm_walk_ops subpage_walk_ops = {
+	.pmd_entry	= subpage_walk_pmd_entry,
+};
 
 static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
 				    unsigned long len)
 {
 	struct vm_area_struct *vma;
-	struct mm_walk subpage_proto_walk = {
-		.mm = mm,
-		.pmd_entry = subpage_walk_pmd_entry,
-	};
 
 	/*
 	 * We don't try too hard, we just mark all the vma in that range
@@ -159,7 +165,7 @@ static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
 		if (vma->vm_start >= (addr + len))
 			break;
 		vma->vm_flags |= VM_NOHUGEPAGE;
-		walk_page_vma(vma, &subpage_proto_walk);
+		walk_page_vma(vma, &subpage_walk_ops, NULL);
 		vma = vma->vm_next;
 	}
 }
@@ -181,19 +187,24 @@ static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
  * in a 2-bit field won't allow writes to a page that is otherwise
  * write-protected.
  */
-long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
+SYSCALL_DEFINE3(subpage_prot, unsigned long, addr,
+		unsigned long, len, u32 __user *, map)
 {
 	struct mm_struct *mm = current->mm;
-	struct subpage_prot_table *spt = &mm->context.spt;
+	struct subpage_prot_table *spt;
 	u32 **spm, *spp;
 	unsigned long i;
 	size_t nw;
 	unsigned long next, limit;
 	int err;
 
+	if (radix_enabled())
+		return -ENOENT;
+
 	/* Check parameters */
 	if ((addr & ~PAGE_MASK) || (len & ~PAGE_MASK) ||
-	    addr >= TASK_SIZE || len >= TASK_SIZE || addr + len > TASK_SIZE)
+	    addr >= mm->task_size || len >= mm->task_size ||
+	    addr + len > mm->task_size)
 		return -EINVAL;
 
 	if (is_hugepage_only_range(mm, addr, len))
@@ -208,7 +219,22 @@ long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 	if (!access_ok(map, (len >> PAGE_SHIFT) * sizeof(u32)))
 		return -EFAULT;
 
-	down_write(&mm->mmap_sem);
+	mmap_write_lock(mm);
+
+	spt = mm_ctx_subpage_prot(&mm->context);
+	if (!spt) {
+		/*
+		 * Allocate subpage prot table if not already done.
+		 * Do this with mmap_sem held
+		 */
+		spt = kzalloc(sizeof(struct subpage_prot_table), GFP_KERNEL);
+		if (!spt) {
+			err = -ENOMEM;
+			goto out;
+		}
+		mm->context.hash_context->spt = spt;
+	}
+
 	subpage_mark_vma_nohuge(mm, addr, len);
 	for (limit = addr + len; addr < limit; addr = next) {
 		next = pmd_addr_end(addr, limit);
@@ -243,12 +269,11 @@ long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 		if (addr + (nw << PAGE_SHIFT) > next)
 			nw = (next - addr) >> PAGE_SHIFT;
 
-		up_write(&mm->mmap_sem);
-		err = -EFAULT;
+		mmap_write_unlock(mm);
 		if (__copy_from_user(spp, map, nw * sizeof(u32)))
-			goto out2;
+			return -EFAULT;
 		map += nw;
-		down_write(&mm->mmap_sem);
+		mmap_write_lock(mm);
 
 		/* now flush any existing HPTEs for the range */
 		hpte_flush_range(mm, addr, nw);
@@ -257,7 +282,6 @@ long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 		spt->maxaddr = limit;
 	err = 0;
  out:
-	up_write(&mm->mmap_sem);
- out2:
+	mmap_write_unlock(mm);
 	return err;
 }
