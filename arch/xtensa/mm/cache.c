@@ -31,7 +31,7 @@
 #include <asm/tlbflush.h>
 #include <asm/page.h>
 #include <asm/pgalloc.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 
 //#define printd(x...) printk(x)
 #define printd(x...) do { } while(0)

@@ -10,7 +10,7 @@
 #include <asm/lppaca.h>
 #include <asm/paca.h>
 #include <asm/sections.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 #include <asm/kexec.h>
 
 /* This symbol is provided by the linker - let it fill in the paca

@@ -18,7 +18,7 @@
 #include <asm/cacheflush.h>
 #include <asm/e820.h>
 #include <asm/fixmap.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
 #include <asm/pat.h>

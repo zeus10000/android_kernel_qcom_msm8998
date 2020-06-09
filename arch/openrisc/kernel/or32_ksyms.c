@@ -11,7 +11,7 @@
  * Copyright (C) 2010-2011 Jonas Bonn <jonas@southpole.se>
  */
 
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/elfcore.h>
 #include <linux/sched.h>
 #include <linux/in6.h>
@@ -26,6 +26,7 @@
 #include <asm/hardirq.h>
 #include <asm/delay.h>
 #include <asm/pgalloc.h>
+#include <linux/pgtable.h>
 
 #define DECLARE_EXPORT(name) extern void name(void); EXPORT_SYMBOL(name)
 
@@ -38,5 +39,9 @@ DECLARE_EXPORT(__muldi3);
 DECLARE_EXPORT(__ashrdi3);
 DECLARE_EXPORT(__ashldi3);
 DECLARE_EXPORT(__lshrdi3);
+DECLARE_EXPORT(__ucmpdi2);
 
+EXPORT_SYMBOL(empty_zero_page);
 EXPORT_SYMBOL(__copy_tofrom_user);
+EXPORT_SYMBOL(__clear_user);
+EXPORT_SYMBOL(memset);

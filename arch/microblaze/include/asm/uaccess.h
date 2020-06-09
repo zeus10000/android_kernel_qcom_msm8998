@@ -1,31 +1,20 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2008-2009 Michal Simek <monstr@monstr.eu>
  * Copyright (C) 2008-2009 PetaLogix
  * Copyright (C) 2006 Atmark Techno, Inc.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License. See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #ifndef _ASM_MICROBLAZE_UACCESS_H
 #define _ASM_MICROBLAZE_UACCESS_H
 
-#ifdef __KERNEL__
-#ifndef __ASSEMBLY__
-
 #include <linux/kernel.h>
-#include <linux/errno.h>
-#include <linux/sched.h> /* RLIMIT_FSIZE */
-#include <linux/mm.h>
 
 #include <asm/mmu.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
+#include <asm/extable.h>
 #include <linux/string.h>
-
-#define VERIFY_READ	0
-#define VERIFY_WRITE	1
 
 /*
  * On Microblaze the fs value is actually the top of the corresponding
@@ -49,30 +38,10 @@
 #  define USER_DS	MAKE_MM_SEG(TASK_SIZE - 1)
 #  endif
 
-# define get_ds()	(KERNEL_DS)
 # define get_fs()	(current_thread_info()->addr_limit)
 # define set_fs(val)	(current_thread_info()->addr_limit = (val))
 
 # define segment_eq(a, b)	((a).seg == (b).seg)
-
-/*
- * The exception table consists of pairs of addresses: the first is the
- * address of an instruction that is allowed to fault, and the second is
- * the address at which the program should continue. No registers are
- * modified, so it is entirely up to the continuation code to figure out
- * what to do.
- *
- * All the routines below use bits of fixup code that are out of line
- * with the main instruction path. This means when everything is well,
- * we don't even have to jump over them. Further, they do not intrude
- * on our cache or tlb entries.
- */
-struct exception_table_entry {
-	unsigned long insn, fixup;
-};
-
-/* Returns 0 if exception not found and fixup otherwise.  */
-extern unsigned long search_exception_table(unsigned long);
 
 #ifndef CONFIG_MMU
 
@@ -190,44 +159,15 @@ extern long __user_bad(void);
  * Returns zero on success, or -EFAULT on error.
  * On error, the variable @x is set to zero.
  */
-#define get_user(x, ptr)						\
-	__get_user_check((x), (ptr), sizeof(*(ptr)))
-
-#define __get_user_check(x, ptr, size)					\
-({									\
-	unsigned long __gu_val = 0;					\
-	const typeof(*(ptr)) __user *__gu_addr = (ptr);			\
-	int __gu_err = 0;						\
-									\
-	if (access_ok(__gu_addr, size)) {			\
-		switch (size) {						\
-		case 1:							\
-			__get_user_asm("lbu", __gu_addr, __gu_val,	\
-				       __gu_err);			\
-			break;						\
-		case 2:							\
-			__get_user_asm("lhu", __gu_addr, __gu_val,	\
-				       __gu_err);			\
-			break;						\
-		case 4:							\
-			__get_user_asm("lw", __gu_addr, __gu_val,	\
-				       __gu_err);			\
-			break;						\
-		default:						\
-			__gu_err = __user_bad();			\
-			break;						\
-		}							\
-	} else {							\
-		__gu_err = -EFAULT;					\
-	}								\
-	x = (__force typeof(*(ptr)))__gu_val;				\
-	__gu_err;							\
+#define get_user(x, ptr) ({				\
+	const typeof(*(ptr)) __user *__gu_ptr = (ptr);	\
+	access_ok(__gu_ptr, sizeof(*__gu_ptr)) ?	\
+		__get_user(x, __gu_ptr) : -EFAULT;	\
 })
 
 #define __get_user(x, ptr)						\
 ({									\
 	unsigned long __gu_val = 0;					\
-	/*unsigned long __gu_ptr = (unsigned long)(ptr);*/		\
 	long __gu_err;							\
 	switch (sizeof(*(ptr))) {					\
 	case 1:								\
@@ -238,6 +178,11 @@ extern long __user_bad(void);
 		break;							\
 	case 4:								\
 		__get_user_asm("lw", (ptr), __gu_val, __gu_err);	\
+		break;							\
+	case 8:								\
+		__gu_err = __copy_from_user(&__gu_val, ptr, 8);		\
+		if (__gu_err)						\
+			__gu_err = -EFAULT;				\
 		break;							\
 	default:							\
 		/* __gu_val = 0; __gu_err = -EINVAL;*/ __gu_err = __user_bad();\
@@ -361,53 +306,31 @@ extern long __user_bad(void);
 	__gu_err;							\
 })
 
-
-/* copy_to_from_user */
-#define __copy_from_user(to, from, n)	\
-	__copy_tofrom_user((__force void __user *)(to), \
-				(void __user *)(from), (n))
-#define __copy_from_user_inatomic(to, from, n) \
-		__copy_from_user((to), (from), (n))
-
-static inline long copy_from_user(void *to,
-		const void __user *from, unsigned long n)
+static inline unsigned long
+raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	unsigned long res = n;
-	might_fault();
-	if (likely(access_ok(VERIFY_READ, from, n)))
-		res = __copy_from_user(to, from, n);
-	if (unlikely(res))
-		memset(to + (n - res), 0, res);
-	return res;
+	return __copy_tofrom_user((__force void __user *)to, from, n);
 }
 
-#define __copy_to_user(to, from, n)	\
-		__copy_tofrom_user((void __user *)(to), \
-			(__force const void __user *)(from), (n))
-#define __copy_to_user_inatomic(to, from, n) __copy_to_user((to), (from), (n))
-
-static inline long copy_to_user(void __user *to,
-		const void *from, unsigned long n)
+static inline unsigned long
+raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	might_fault();
-	if (access_ok(VERIFY_WRITE, to, n))
-		return __copy_to_user(to, from, n);
-	return n;
+	return __copy_tofrom_user(to, (__force const void __user *)from, n);
 }
+#define INLINE_COPY_FROM_USER
+#define INLINE_COPY_TO_USER
 
 /*
  * Copy a null terminated string from userspace.
  */
 extern int __strncpy_user(char *to, const char __user *from, int len);
 
-#define __strncpy_from_user	__strncpy_user
-
 static inline long
 strncpy_from_user(char *dst, const char __user *src, long count)
 {
 	if (!access_ok(src, 1))
 		return -EFAULT;
-	return __strncpy_from_user(dst, src, count);
+	return __strncpy_user(dst, src, count);
 }
 
 /*
@@ -423,8 +346,5 @@ static inline long strnlen_user(const char __user *src, long n)
 		return 0;
 	return __strnlen_user(src, n);
 }
-
-#endif  /* __ASSEMBLY__ */
-#endif /* __KERNEL__ */
 
 #endif /* _ASM_MICROBLAZE_UACCESS_H */

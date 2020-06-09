@@ -33,7 +33,7 @@
 #include <asm/io.h>
 #include <asm/openprom.h>
 #include <asm/oplib.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 
 #include "sunbmac.h"
 

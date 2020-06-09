@@ -10,7 +10,7 @@
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 #include <linux/uaccess.h>
 #include <asm/tlbflush.h>
 
