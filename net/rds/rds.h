@@ -751,9 +751,9 @@ struct rds_message *rds_send_get_message(struct rds_connection *,
 
 /* rdma.c */
 void rds_rdma_unuse(struct rds_sock *rs, u32 r_key, int force);
-int rds_get_mr(struct rds_sock *rs, char __user *optval, int optlen);
-int rds_get_mr_for_dest(struct rds_sock *rs, char __user *optval, int optlen);
-int rds_free_mr(struct rds_sock *rs, char __user *optval, int optlen);
+int rds_get_mr(struct rds_sock *rs, sockptr_t optval, int optlen);
+int rds_get_mr_for_dest(struct rds_sock *rs, sockptr_t optval, int optlen);
+int rds_free_mr(struct rds_sock *rs, sockptr_t optval, int optlen);
 void rds_rdma_drop_keys(struct rds_sock *rs);
 int rds_rdma_extra_size(struct rds_rdma_args *args);
 int rds_cmsg_rdma_args(struct rds_sock *rs, struct rds_message *rm,
