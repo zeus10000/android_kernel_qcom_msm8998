@@ -9,14 +9,14 @@
 #include <linux/tcp.h>
 #include <linux/slab.h>
 #include <linux/random.h>
-#include <linux/cryptohash.h>
+#include <linux/siphash.h>
 #include <linux/kernel.h>
 #include <linux/export.h>
 #include <net/secure_seq.h>
 #include <net/tcp.h>
 #include <net/route.h>
 
-static u32 syncookie_secret[2][16-4+SHA_DIGEST_WORDS] __read_mostly;
+static siphash_key_t syncookie_secret[2] __read_mostly;
 
 #define COOKIEBITS 24	/* Upper bits store count */
 #define COOKIEMASK (((__u32)1 << COOKIEBITS) - 1)
@@ -45,24 +45,13 @@ static u32 syncookie_secret[2][16-4+SHA_DIGEST_WORDS] __read_mostly;
 #define TSBITS	6
 #define TSMASK	(((__u32)1 << TSBITS) - 1)
 
-static DEFINE_PER_CPU(__u32 [16 + 5 + SHA_WORKSPACE_WORDS], ipv4_cookie_scratch);
-
 static u32 cookie_hash(__be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
 		       u32 count, int c)
 {
-	__u32 *tmp;
-
 	net_get_random_once(syncookie_secret, sizeof(syncookie_secret));
-
-	tmp  = this_cpu_ptr(ipv4_cookie_scratch);
-	memcpy(tmp + 4, syncookie_secret[c], sizeof(syncookie_secret[c]));
-	tmp[0] = (__force u32)saddr;
-	tmp[1] = (__force u32)daddr;
-	tmp[2] = ((__force u32)sport << 16) + (__force u32)dport;
-	tmp[3] = count;
-	sha_transform(tmp + 16, (__u8 *)tmp, tmp + 16 + 5);
-
-	return tmp[17];
+	return siphash_4u32((__force u32)saddr, (__force u32)daddr,
+			    (__force u32)sport << 16 | (__force u32)dport,
+			    count, &syncookie_secret[c]);
 }
 
 
@@ -220,14 +209,18 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 	child = icsk->icsk_af_ops->syn_recv_sock(sk, skb, req, dst,
 						 NULL, &own_req);
 	if (child) {
-		atomic_set(&req->rsk_refcnt, 1);
+		refcount_set(&req->rsk_refcnt, 1);
 		tcp_sk(child)->tsoffset = tsoff;
 		sock_rps_save_rxhash(child, skb);
-		inet_csk_reqsk_queue_add(sk, req, child);
-	} else {
-		reqsk_free(req);
+		if (inet_csk_reqsk_queue_add(sk, req, child))
+			return child;
+
+		bh_unlock_sock(child);
+		sock_put(child);
 	}
-	return child;
+	__reqsk_free(req);
+
+	return NULL;
 }
 EXPORT_SYMBOL(tcp_get_cookie_sock);
 
@@ -283,6 +276,39 @@ bool cookie_ecn_ok(const struct tcp_options_received *tcp_opt,
 }
 EXPORT_SYMBOL(cookie_ecn_ok);
 
+struct request_sock *cookie_tcp_reqsk_alloc(const struct request_sock_ops *ops,
+					    struct sock *sk,
+					    struct sk_buff *skb)
+{
+	struct tcp_request_sock *treq;
+	struct request_sock *req;
+
+#ifdef CONFIG_MPTCP
+	if (sk_is_mptcp(sk))
+		ops = &mptcp_subflow_request_sock_ops;
+#endif
+
+	req = inet_reqsk_alloc(ops, sk, false);
+	if (!req)
+		return NULL;
+
+#if IS_ENABLED(CONFIG_MPTCP)
+	treq = tcp_rsk(req);
+	treq->is_mptcp = sk_is_mptcp(sk);
+	if (treq->is_mptcp) {
+		int err = mptcp_subflow_init_cookie_req(req, sk, skb);
+
+		if (err) {
+			reqsk_free(req);
+			return NULL;
+		}
+	}
+#endif
+
+	return req;
+}
+EXPORT_SYMBOL_GPL(cookie_tcp_reqsk_alloc);
+
 /* On input, sk is a listener.
  * Output is listener if incoming packet would not create a child
  *           NULL if memory could not be allocated.
@@ -333,7 +359,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 		goto out;
 
 	ret = NULL;
-	req = inet_reqsk_alloc(&tcp_request_sock_ops, sk, false); /* for safety */
+	req = cookie_tcp_reqsk_alloc(&tcp_request_sock_ops, sk, skb);
 	if (!req)
 		goto out;
 
@@ -342,6 +368,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	treq->rcv_isn		= ntohl(th->seq) - 1;
 	treq->snt_isn		= cookie;
 	treq->ts_off		= 0;
+	treq->txhash		= net_tx_rndhash();
 	req->mss		= mss;
 	ireq->ir_num		= ntohs(th->dest);
 	ireq->ir_rmt_port	= th->source;
@@ -356,12 +383,15 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	treq->snt_synack	= 0;
 	treq->tfo_listener	= false;
 
+	if (IS_ENABLED(CONFIG_SMC))
+		ireq->smc_ok = 0;
+
 	ireq->ir_iif = inet_request_bound_dev_if(sk, skb);
 
 	/* We throwed the options of the initial SYN away, so we hope
 	 * the ACK carries the same options again (see RFC1122 4.2.3.8)
 	 */
-	ireq->opt = tcp_v4_save_options(sock_net(sk), skb);
+	RCU_INIT_POINTER(ireq->ireq_opt, tcp_v4_save_options(sock_net(sk), skb));
 
 	if (security_inet_conn_request(sk, skb, req)) {
 		reqsk_free(req);
