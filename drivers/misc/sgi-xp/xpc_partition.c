@@ -93,13 +93,8 @@ xpc_get_rsvd_page_pa(int nasid)
 		if (ret != xpNeedMoreInfo)
 			break;
 
-		/* !!! L1_CACHE_ALIGN() is only a sn2-bte_copy requirement */
-		if (is_shub())
-			len = L1_CACHE_ALIGN(len);
-
 		if (len > buf_len) {
-			if (buf_base != NULL)
-				kfree(buf_base);
+			kfree(buf_base);
 			buf_len = L1_CACHE_ALIGN(len);
 			buf = xpc_kmalloc_cacheline_aligned(buf_len, GFP_KERNEL,
 							    &buf_base);
@@ -415,7 +410,6 @@ xpc_discovery(void)
 	int region_size;
 	int max_regions;
 	int nasid;
-	struct xpc_rsvd_page *rp;
 	unsigned long *discovered_nasids;
 	enum xp_retval ret;
 
@@ -432,8 +426,6 @@ xpc_discovery(void)
 		return;
 	}
 
-	rp = (struct xpc_rsvd_page *)xpc_rsvd_page;
-
 	/*
 	 * The term 'region' in this context refers to the minimum number of
 	 * nodes that can comprise an access protection grouping. The access
@@ -449,12 +441,13 @@ xpc_discovery(void)
 		switch (region_size) {
 		case 128:
 			max_regions *= 2;
+			fallthrough;
 		case 64:
 			max_regions *= 2;
+			fallthrough;
 		case 32:
 			max_regions *= 2;
 			region_size = 16;
-			DBUG_ON(!is_shub2());
 		}
 	}
 

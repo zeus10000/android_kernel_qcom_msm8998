@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 1999-2003		Andre Hedrick <andre@linux-ide.org>
  * Portions Copyright (C) 2001	        Sun Microsystems, Inc.
@@ -531,14 +532,9 @@ static const struct hpt_info hpt371n = {
 	.timings	= &hpt37x_timings
 };
 
-static int check_in_drive_list(ide_drive_t *drive, const char **list)
+static bool check_in_drive_list(ide_drive_t *drive, const char **list)
 {
-	char *m = (char *)&drive->id[ATA_ID_PROD];
-
-	while (*list)
-		if (!strcmp(*list++, m))
-			return 1;
-	return 0;
+	return match_string(list, -1, (char *)&drive->id[ATA_ID_PROD]) >= 0;
 }
 
 static struct hpt_info *hpt3xx_get_info(struct device *dev)
@@ -579,13 +575,14 @@ static u8 hpt3xx_udma_filter(ide_drive_t *drive)
 		if (!HPT370_ALLOW_ATA100_5 ||
 		    check_in_drive_list(drive, bad_ata100_5))
 			return ATA_UDMA4;
+		fallthrough;
 	case HPT372 :
 	case HPT372A:
 	case HPT372N:
 	case HPT374 :
 		if (ata_id_is_sata(drive->id))
 			mask &= ~0x0e;
-		/* Fall thru */
+		fallthrough;
 	default:
 		return mask;
 	}
@@ -605,7 +602,7 @@ static u8 hpt3xx_mdma_filter(ide_drive_t *drive)
 	case HPT374 :
 		if (ata_id_is_sata(drive->id))
 			return 0x00;
-		/* Fall thru */
+		fallthrough;
 	default:
 		return 0x07;
 	}
@@ -1017,7 +1014,7 @@ static int init_chipset_hpt366(struct pci_dev *dev)
 		pci_read_config_dword(dev, 0x40, &itr1);
 
 		/* Detect PCI clock by looking at cmd_high_time. */
-		switch((itr1 >> 8) & 0x07) {
+		switch ((itr1 >> 8) & 0x0f) {
 			case 0x09:
 				pci_clk = 40;
 				break;

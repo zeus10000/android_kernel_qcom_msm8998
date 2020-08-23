@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel MIC Platform Software Stack (MPSS)
  *
  * Copyright(c) 2015 Intel Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
  * Intel SCIF driver.
- *
  */
-#include <linux/dma_remapping.h>
+#include <linux/intel-iommu.h>
 #include <linux/pagemap.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/signal.h>
@@ -39,8 +30,7 @@ void scif_rma_ep_init(struct scif_endpt *ep)
 	struct scif_endpt_rma_info *rma = &ep->rma_info;
 
 	mutex_init(&rma->rma_lock);
-	init_iova_domain(&rma->iovad, PAGE_SIZE, SCIF_IOVA_START_PFN,
-			 SCIF_DMA_64BIT_PFN);
+	init_iova_domain(&rma->iovad, PAGE_SIZE, SCIF_IOVA_START_PFN);
 	spin_lock_init(&rma->tc_lock);
 	mutex_init(&rma->mmn_lock);
 	INIT_LIST_HEAD(&rma->reg_list);
@@ -123,14 +113,17 @@ static int scif_destroy_pinned_pages(struct scif_pinned_pages *pin)
 	int writeable = pin->prot & SCIF_PROT_WRITE;
 	int kernel = SCIF_MAP_KERNEL & pin->map_flags;
 
-	for (j = 0; j < pin->nr_pages; j++) {
-		if (pin->pages[j] && !kernel) {
-			if (writeable)
-				SetPageDirty(pin->pages[j]);
-			put_page(pin->pages[j]);
+	if (kernel) {
+		for (j = 0; j < pin->nr_pages; j++) {
+			if (pin->pages[j] && !kernel) {
+				if (writeable)
+					set_page_dirty_lock(pin->pages[j]);
+				put_page(pin->pages[j]);
+			}
 		}
-	}
-
+	} else
+		unpin_user_pages_dirty_lock(pin->pages, pin->nr_pages,
+					    writeable);
 	scif_free(pin->pages,
 		  pin->nr_pages * sizeof(*pin->pages));
 	scif_free(pin, sizeof(*pin));
@@ -273,21 +266,12 @@ static inline void __scif_release_mm(struct mm_struct *mm)
 
 static inline int
 __scif_dec_pinned_vm_lock(struct mm_struct *mm,
-			  int nr_pages, bool try_lock)
+			  int nr_pages)
 {
 	if (!mm || !nr_pages || !scif_ulimit_check)
 		return 0;
-	if (try_lock) {
-		if (!down_write_trylock(&mm->mmap_sem)) {
-			dev_err(scif_info.mdev.this_device,
-				"%s %d err\n", __func__, __LINE__);
-			return -1;
-		}
-	} else {
-		down_write(&mm->mmap_sem);
-	}
-	mm->pinned_vm -= nr_pages;
-	up_write(&mm->mmap_sem);
+
+	atomic64_sub(nr_pages, &mm->pinned_vm);
 	return 0;
 }
 
@@ -299,16 +283,16 @@ static inline int __scif_check_inc_pinned_vm(struct mm_struct *mm,
 	if (!mm || !nr_pages || !scif_ulimit_check)
 		return 0;
 
-	locked = nr_pages;
-	locked += mm->pinned_vm;
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
+	locked = atomic64_add_return(nr_pages, &mm->pinned_vm);
+
 	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
+		atomic64_sub(nr_pages, &mm->pinned_vm);
 		dev_err(scif_info.mdev.this_device,
 			"locked(%lu) > lock_limit(%lu)\n",
 			locked, lock_limit);
 		return -ENOMEM;
 	}
-	mm->pinned_vm = locked;
 	return 0;
 }
 
@@ -327,7 +311,7 @@ int scif_destroy_window(struct scif_endpt *ep, struct scif_window *window)
 
 	might_sleep();
 	if (!window->temp && window->mm) {
-		__scif_dec_pinned_vm_lock(window->mm, window->nr_pages, 0);
+		__scif_dec_pinned_vm_lock(window->mm, window->nr_pages);
 		__scif_release_mm(window->mm);
 		window->mm = NULL;
 	}
@@ -417,7 +401,7 @@ static int scif_create_remote_lookup(struct scif_dev *remote_dev,
 		if (err)
 			goto error_window;
 		err = scif_map_page(&window->num_pages_lookup.lookup[j],
-				    vmalloc_dma_phys ?
+				    vmalloc_num_pages ?
 				    vmalloc_to_page(&window->num_pages[i]) :
 				    virt_to_page(&window->num_pages[i]),
 				    remote_dev);
@@ -474,7 +458,7 @@ static void scif_destroy_remote_lookup(struct scif_dev *remote_dev,
 
 /**
  * scif_create_remote_window:
- * @ep: end point
+ * @scifdev:  SCIF device
  * @nr_pages: number of pages in window
  *
  * Allocate and prepare a remote registration window.
@@ -516,7 +500,6 @@ error_ret:
 
 /**
  * scif_destroy_remote_window:
- * @ep: end point
  * @window: remote registration window
  *
  * Deallocate resources for remote window.
@@ -673,8 +656,8 @@ int scif_unregister_window(struct scif_window *window)
 	{
 		window->unreg_state = OP_IN_PROGRESS;
 		send_msg = true;
-		/* fall through */
 	}
+		fallthrough;
 	case OP_IN_PROGRESS:
 	{
 		scif_get_window(window, 1);
@@ -738,7 +721,7 @@ done:
 					    ep->rma_info.dma_chan);
 		} else {
 			if (!__scif_dec_pinned_vm_lock(window->mm,
-						       window->nr_pages, 1)) {
+						       window->nr_pages)) {
 				__scif_release_mm(window->mm);
 				window->mm = NULL;
 			}
@@ -1053,6 +1036,7 @@ void scif_free_window_offset(struct scif_endpt *ep,
 
 /**
  * scif_alloc_req: Respond to SCIF_ALLOC_REQ interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Remote side is requesting a memory allocation.
@@ -1088,6 +1072,7 @@ error:
 
 /**
  * scif_alloc_gnt_rej: Respond to SCIF_ALLOC_GNT/REJ interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Remote side responded to a memory allocation.
@@ -1112,6 +1097,7 @@ void scif_alloc_gnt_rej(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_free_virt: Respond to SCIF_FREE_VIRT interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Free up memory kmalloc'd earlier.
@@ -1150,6 +1136,7 @@ scif_fixup_aper_base(struct scif_dev *dev, struct scif_window *window)
 
 /**
  * scif_recv_reg: Respond to SCIF_REGISTER interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Update remote window list with a new registered window.
@@ -1186,6 +1173,7 @@ void scif_recv_reg(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_unreg: Respond to SCIF_UNREGISTER interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Remove window from remote registration list;
@@ -1251,6 +1239,7 @@ error:
 
 /**
  * scif_recv_reg_ack: Respond to SCIF_REGISTER_ACK interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Wake up the window waiting to complete registration.
@@ -1269,6 +1258,7 @@ void scif_recv_reg_ack(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_reg_nack: Respond to SCIF_REGISTER_NACK interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Wake up the window waiting to inform it that registration
@@ -1288,6 +1278,7 @@ void scif_recv_reg_nack(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_unreg_ack: Respond to SCIF_UNREGISTER_ACK interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Wake up the window waiting to complete unregistration.
@@ -1306,6 +1297,7 @@ void scif_recv_unreg_ack(struct scif_dev *scifdev, struct scifmsg *msg)
 
 /**
  * scif_recv_unreg_nack: Respond to SCIF_UNREGISTER_NACK interrupt message
+ * @scifdev:    SCIF device
  * @msg:        Interrupt message
  *
  * Wake up the window waiting to inform it that unregistration
@@ -1386,34 +1378,26 @@ int __scif_pin_pages(void *addr, size_t len, int *out_prot,
 		prot |= SCIF_PROT_WRITE;
 retry:
 		mm = current->mm;
-		down_write(&mm->mmap_sem);
 		if (ulimit) {
 			err = __scif_check_inc_pinned_vm(mm, nr_pages);
 			if (err) {
-				up_write(&mm->mmap_sem);
 				pinned_pages->nr_pages = 0;
 				goto error_unmap;
 			}
 		}
 
-		pinned_pages->nr_pages = get_user_pages(
+		pinned_pages->nr_pages = pin_user_pages_fast(
 				(u64)addr,
 				nr_pages,
 				(prot & SCIF_PROT_WRITE) ? FOLL_WRITE : 0,
-				pinned_pages->pages,
-				NULL);
-		up_write(&mm->mmap_sem);
+				pinned_pages->pages);
 		if (nr_pages != pinned_pages->nr_pages) {
 			if (try_upgrade) {
 				if (ulimit)
-					__scif_dec_pinned_vm_lock(mm,
-								  nr_pages, 0);
+					__scif_dec_pinned_vm_lock(mm, nr_pages);
 				/* Roll back any pinned pages */
-				for (i = 0; i < pinned_pages->nr_pages; i++) {
-					if (pinned_pages->pages[i])
-						put_page(
-						pinned_pages->pages[i]);
-				}
+				unpin_user_pages(pinned_pages->pages,
+						 pinned_pages->nr_pages);
 				prot &= ~SCIF_PROT_WRITE;
 				try_upgrade = false;
 				goto retry;
@@ -1434,7 +1418,7 @@ retry:
 	return err;
 dec_pinned:
 	if (ulimit)
-		__scif_dec_pinned_vm_lock(mm, nr_pages, 0);
+		__scif_dec_pinned_vm_lock(mm, nr_pages);
 	/* Something went wrong! Rollback */
 error_unmap:
 	pinned_pages->nr_pages = nr_pages;

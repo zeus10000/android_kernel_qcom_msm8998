@@ -682,7 +682,7 @@ out:
 	case RXRPC_ACK_DELAY:
 		if (ret != -EAGAIN)
 			break;
-		/* Fall through */
+		fallthrough;
 	default:
 		rxrpc_send_ack_packet(call, false, NULL);
 	}

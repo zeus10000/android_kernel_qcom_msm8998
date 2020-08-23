@@ -413,6 +413,7 @@ static void sdla_errors(struct net_device *dev, int cmd, int dlci, int ret, int 
 		case SDLA_RET_NO_BUFS:
 			if (cmd == SDLA_INFORMATION_WRITE)
 				break;
+			fallthrough;
 
 		default: 
 			netdev_dbg(dev, "Cmd 0x%02X generated return code 0x%02X\n",
@@ -923,13 +924,10 @@ static irqreturn_t sdla_isr(int dummy, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void sdla_poll(unsigned long device)
+static void sdla_poll(struct timer_list *t)
 {
-	struct net_device	  *dev;
-	struct frad_local *flp;
-
-	dev = (struct net_device *) device;
-	flp = netdev_priv(dev);
+	struct frad_local *flp = from_timer(flp, t, timer);
+	struct net_device *dev = flp->dev;
 
 	if (sdla_byte(dev, SDLA_502_RCV_BUF))
 		sdla_receive(dev);
@@ -1612,11 +1610,10 @@ static void setup_sdla(struct net_device *dev)
 	flp->assoc		= sdla_assoc;
 	flp->deassoc		= sdla_deassoc;
 	flp->dlci_conf		= sdla_dlci_conf;
+	flp->dev		= dev;
 
-	init_timer(&flp->timer);
+	timer_setup(&flp->timer, sdla_poll, 0);
 	flp->timer.expires	= 1;
-	flp->timer.data		= (unsigned long) dev;
-	flp->timer.function	= sdla_poll;
 }
 
 static struct net_device *sdla;

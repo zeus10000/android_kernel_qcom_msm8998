@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rx51.c  --  SoC audio for Nokia RX-51
  *
@@ -6,21 +7,6 @@
  * Contact: Peter Ujfalusi <peter.ujfalusi@ti.com>
  *          Eduardo Valentin <eduardo.valentin@nokia.com>
  *          Jarkko Nikula <jarkko.nikula@bitmer.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/delay.h>
@@ -33,7 +19,6 @@
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <linux/platform_data/asoc-ti-mcbsp.h>
-#include "../codecs/tpa6130a2.h"
 
 #include <asm/mach-types.h>
 
@@ -70,6 +55,7 @@ static void rx51_ext_control(struct snd_soc_dapm_context *dapm)
 		break;
 	case RX51_JACK_HS:
 		hs = 1;
+		fallthrough;
 	case RX51_JACK_HP:
 		hp = 1;
 		break;
@@ -104,7 +90,7 @@ static void rx51_ext_control(struct snd_soc_dapm_context *dapm)
 static int rx51_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_card *card = rtd->card;
 
 	snd_pcm_hw_constraint_single(runtime, SNDRV_PCM_HW_PARAM_CHANNELS, 2);
@@ -116,15 +102,15 @@ static int rx51_startup(struct snd_pcm_substream *substream)
 static int rx51_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 
 	/* Set the codec system clock for DAC and ADC */
 	return snd_soc_dai_set_sysclk(codec_dai, 0, 19200000,
 				      SND_SOC_CLOCK_IN);
 }
 
-static struct snd_soc_ops rx51_ops = {
+static const struct snd_soc_ops rx51_ops = {
 	.startup = rx51_startup,
 	.hw_params = rx51_hw_params,
 };
@@ -132,7 +118,7 @@ static struct snd_soc_ops rx51_ops = {
 static int rx51_get_spk(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.integer.value[0] = rx51_spk_func;
+	ucontrol->value.enumerated.item[0] = rx51_spk_func;
 
 	return 0;
 }
@@ -142,10 +128,10 @@ static int rx51_set_spk(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
 
-	if (rx51_spk_func == ucontrol->value.integer.value[0])
+	if (rx51_spk_func == ucontrol->value.enumerated.item[0])
 		return 0;
 
-	rx51_spk_func = ucontrol->value.integer.value[0];
+	rx51_spk_func = ucontrol->value.enumerated.item[0];
 	rx51_ext_control(&card->dapm);
 
 	return 1;
@@ -164,23 +150,10 @@ static int rx51_spk_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static int rx51_hp_event(struct snd_soc_dapm_widget *w,
-			 struct snd_kcontrol *k, int event)
-{
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
-
-	if (SND_SOC_DAPM_EVENT_ON(event))
-		tpa6130a2_stereo_enable(codec, 1);
-	else
-		tpa6130a2_stereo_enable(codec, 0);
-
-	return 0;
-}
-
 static int rx51_get_input(struct snd_kcontrol *kcontrol,
 			  struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.integer.value[0] = rx51_dmic_func;
+	ucontrol->value.enumerated.item[0] = rx51_dmic_func;
 
 	return 0;
 }
@@ -190,10 +163,10 @@ static int rx51_set_input(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
 
-	if (rx51_dmic_func == ucontrol->value.integer.value[0])
+	if (rx51_dmic_func == ucontrol->value.enumerated.item[0])
 		return 0;
 
-	rx51_dmic_func = ucontrol->value.integer.value[0];
+	rx51_dmic_func = ucontrol->value.enumerated.item[0];
 	rx51_ext_control(&card->dapm);
 
 	return 1;
@@ -202,7 +175,7 @@ static int rx51_set_input(struct snd_kcontrol *kcontrol,
 static int rx51_get_jack(struct snd_kcontrol *kcontrol,
 			 struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.integer.value[0] = rx51_jack_func;
+	ucontrol->value.enumerated.item[0] = rx51_jack_func;
 
 	return 0;
 }
@@ -212,10 +185,10 @@ static int rx51_set_jack(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
 
-	if (rx51_jack_func == ucontrol->value.integer.value[0])
+	if (rx51_jack_func == ucontrol->value.enumerated.item[0])
 		return 0;
 
-	rx51_jack_func = ucontrol->value.integer.value[0];
+	rx51_jack_func = ucontrol->value.enumerated.item[0];
 	rx51_ext_control(&card->dapm);
 
 	return 1;
@@ -235,7 +208,7 @@ static struct snd_soc_jack_gpio rx51_av_jack_gpios[] = {
 static const struct snd_soc_dapm_widget aic34_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Ext Spk", rx51_spk_event),
 	SND_SOC_DAPM_MIC("DMic", NULL),
-	SND_SOC_DAPM_HP("Headphone Jack", rx51_hp_event),
+	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 	SND_SOC_DAPM_MIC("HS Mic", NULL),
 	SND_SOC_DAPM_LINE("FM Transmitter", NULL),
 	SND_SOC_DAPM_SPK("Earphone", NULL),
@@ -246,10 +219,13 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"Ext Spk", NULL, "HPROUT"},
 	{"Ext Spk", NULL, "HPLCOM"},
 	{"Ext Spk", NULL, "HPRCOM"},
-	{"Headphone Jack", NULL, "LLOUT"},
-	{"Headphone Jack", NULL, "RLOUT"},
 	{"FM Transmitter", NULL, "LLOUT"},
 	{"FM Transmitter", NULL, "RLOUT"},
+
+	{"Headphone Jack", NULL, "TPA6130A2 HPLEFT"},
+	{"Headphone Jack", NULL, "TPA6130A2 HPRIGHT"},
+	{"TPA6130A2 LEFTIN", NULL, "LLOUT"},
+	{"TPA6130A2 RIGHTIN", NULL, "RLOUT"},
 
 	{"DMic Rate 64", NULL, "DMic"},
 	{"DMic", NULL, "Mic Bias"},
@@ -286,16 +262,10 @@ static const struct snd_kcontrol_new aic34_rx51_controls[] = {
 
 static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
 	struct snd_soc_card *card = rtd->card;
 	struct rx51_audio_pdata *pdata = snd_soc_card_get_drvdata(card);
 	int err;
 
-	err = tpa6130a2_add_controls(codec);
-	if (err < 0) {
-		dev_err(card->dev, "Failed to add TPA6130A2 controls\n");
-		return err;
-	}
 	snd_soc_limit_volume(card, "TPA6130A2 Headphone Playback Volume", 42);
 
 	err = omap_mcbsp_st_add_controls(rtd, 2);
@@ -328,41 +298,42 @@ static int rx51_aic34_init(struct snd_soc_pcm_runtime *rtd)
 	return err;
 }
 
-static int rx51_card_remove(struct snd_soc_card *card)
-{
-	snd_soc_jack_free_gpios(&rx51_av_jack, ARRAY_SIZE(rx51_av_jack_gpios),
-				rx51_av_jack_gpios);
-
-	return 0;
-}
-
 /* Digital audio interface glue - connects codec <--> CPU */
+SND_SOC_DAILINK_DEFS(aic34,
+	DAILINK_COMP_ARRAY(COMP_CPU("omap-mcbsp.2")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("tlv320aic3x-codec.2-0018",
+				      "tlv320aic3x-hifi")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("omap-mcbsp.2")));
+
 static struct snd_soc_dai_link rx51_dai[] = {
 	{
 		.name = "TLV320AIC34",
 		.stream_name = "AIC34",
-		.cpu_dai_name = "omap-mcbsp.2",
-		.codec_dai_name = "tlv320aic3x-hifi",
-		.platform_name = "omap-mcbsp.2",
-		.codec_name = "tlv320aic3x-codec.2-0018",
 		.dai_fmt = SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_IB_NF |
 			   SND_SOC_DAIFMT_CBM_CFM,
 		.init = rx51_aic34_init,
 		.ops = &rx51_ops,
+		SND_SOC_DAILINK_REG(aic34),
 	},
 };
 
 static struct snd_soc_aux_dev rx51_aux_dev[] = {
 	{
-		.name = "TLV320AIC34b",
-		.codec_name = "tlv320aic3x-codec.2-0019",
+		.dlc = COMP_AUX("tlv320aic3x-codec.2-0019"),
+	},
+	{
+		.dlc = COMP_AUX("tpa6130a2.2-0060"),
 	},
 };
 
 static struct snd_soc_codec_conf rx51_codec_conf[] = {
 	{
-		.dev_name = "tlv320aic3x-codec.2-0019",
+		.dlc = COMP_CODEC_CONF("tlv320aic3x-codec.2-0019"),
 		.name_prefix = "b",
+	},
+	{
+		.dlc = COMP_CODEC_CONF("tpa6130a2.2-0060"),
+		.name_prefix = "TPA6130A2",
 	},
 };
 
@@ -370,7 +341,6 @@ static struct snd_soc_codec_conf rx51_codec_conf[] = {
 static struct snd_soc_card rx51_sound_card = {
 	.name = "RX-51",
 	.owner = THIS_MODULE,
-	.remove = rx51_card_remove,
 	.dai_link = rx51_dai,
 	.num_links = ARRAY_SIZE(rx51_dai),
 	.aux_dev = rx51_aux_dev,
@@ -407,46 +377,44 @@ static int rx51_soc_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "McBSP node is not provided\n");
 			return -EINVAL;
 		}
-		rx51_dai[0].cpu_dai_name = NULL;
-		rx51_dai[0].platform_name = NULL;
-		rx51_dai[0].cpu_of_node = dai_node;
-		rx51_dai[0].platform_of_node = dai_node;
+		rx51_dai[0].cpus->dai_name = NULL;
+		rx51_dai[0].platforms->name = NULL;
+		rx51_dai[0].cpus->of_node = dai_node;
+		rx51_dai[0].platforms->of_node = dai_node;
 
 		dai_node = of_parse_phandle(np, "nokia,audio-codec", 0);
 		if (!dai_node) {
 			dev_err(&pdev->dev, "Codec node is not provided\n");
 			return -EINVAL;
 		}
-		rx51_dai[0].codec_name = NULL;
-		rx51_dai[0].codec_of_node = dai_node;
+		rx51_dai[0].codecs->name = NULL;
+		rx51_dai[0].codecs->of_node = dai_node;
 
 		dai_node = of_parse_phandle(np, "nokia,audio-codec", 1);
 		if (!dai_node) {
 			dev_err(&pdev->dev, "Auxiliary Codec node is not provided\n");
 			return -EINVAL;
 		}
-		rx51_aux_dev[0].codec_name = NULL;
-		rx51_aux_dev[0].codec_of_node = dai_node;
-		rx51_codec_conf[0].dev_name = NULL;
-		rx51_codec_conf[0].of_node = dai_node;
+		rx51_aux_dev[0].dlc.name = NULL;
+		rx51_aux_dev[0].dlc.of_node = dai_node;
+		rx51_codec_conf[0].dlc.name = NULL;
+		rx51_codec_conf[0].dlc.of_node = dai_node;
 
 		dai_node = of_parse_phandle(np, "nokia,headphone-amplifier", 0);
 		if (!dai_node) {
 			dev_err(&pdev->dev, "Headphone amplifier node is not provided\n");
 			return -EINVAL;
 		}
-
-		/* TODO: tpa6130a2a driver supports only a single instance, so
-		 * this driver ignores the headphone-amplifier node for now.
-		 * It's already mandatory in the DT binding to be future proof.
-		 */
+		rx51_aux_dev[1].dlc.name = NULL;
+		rx51_aux_dev[1].dlc.of_node = dai_node;
+		rx51_codec_conf[1].dlc.name = NULL;
+		rx51_codec_conf[1].dlc.of_node = dai_node;
 	}
 
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
-	if (pdata == NULL) {
-		dev_err(card->dev, "failed to create private data\n");
+	if (pdata == NULL)
 		return -ENOMEM;
-	}
+
 	snd_soc_card_set_drvdata(card, pdata);
 
 	pdata->tvout_selection_gpio = devm_gpiod_get(card->dev,

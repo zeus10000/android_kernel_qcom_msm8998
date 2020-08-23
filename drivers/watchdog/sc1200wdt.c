@@ -83,7 +83,7 @@ MODULE_PARM_DESC(isapnp,
 	"When set to 0 driver ISA PnP support will be disabled");
 #endif
 
-module_param(io, int, 0);
+module_param_hw(io, int, ioport, 0);
 MODULE_PARM_DESC(io, "io port");
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "range is 0-255 minutes, default is 1");
@@ -173,7 +173,7 @@ static int sc1200wdt_open(struct inode *inode, struct file *file)
 	sc1200wdt_start();
 	pr_info("Watchdog enabled, timeout = %d min(s)", timeout);
 
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 
@@ -234,7 +234,7 @@ static long sc1200wdt_ioctl(struct file *file, unsigned int cmd,
 			return -EINVAL;
 		timeout = new_timeout;
 		sc1200wdt_write_data(WDTO, timeout);
-		/* fall through and return the new timeout */
+		fallthrough;	/* and return the new timeout */
 
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout * 60, p);
@@ -307,6 +307,7 @@ static const struct file_operations sc1200wdt_fops = {
 	.llseek		= no_llseek,
 	.write		= sc1200wdt_write,
 	.unlocked_ioctl = sc1200wdt_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= sc1200wdt_open,
 	.release	= sc1200wdt_release,
 };
@@ -337,7 +338,7 @@ static int __init sc1200wdt_probe(void)
 
 #if defined CONFIG_PNP
 
-static struct pnp_device_id scl200wdt_pnp_devices[] = {
+static const struct pnp_device_id scl200wdt_pnp_devices[] = {
 	/* National Semiconductor PC87307/PC97307 watchdog component */
 	{.id = "NSC0800", .driver_data = 0},
 	{.id = ""},

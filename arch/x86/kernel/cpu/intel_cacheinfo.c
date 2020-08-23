@@ -12,12 +12,16 @@
 #include <linux/cacheinfo.h>
 #include <linux/cpu.h>
 #include <linux/sched.h>
+#include <linux/capability.h>
 #include <linux/sysfs.h>
 #include <linux/pci.h>
 
 #include <asm/cpufeature.h>
+#include <asm/cacheinfo.h>
 #include <asm/amd_nb.h>
 #include <asm/smp.h>
+
+#include "cpu.h"
 
 #define LVL_1_INST	1
 #define LVL_1_DATA	2
@@ -154,6 +158,7 @@ struct _cpuid4_info_regs {
 	union _cpuid4_leaf_eax eax;
 	union _cpuid4_leaf_ebx ebx;
 	union _cpuid4_leaf_ecx ecx;
+	unsigned int id;
 	unsigned long size;
 	struct amd_northbridge *nb;
 };
@@ -243,6 +248,7 @@ amd_cpuid4(int leaf, union _cpuid4_leaf_eax *eax,
 	switch (leaf) {
 	case 1:
 		l1 = &l1i;
+		fallthrough;
 	case 0:
 		if (!l1->val)
 			return;
@@ -445,7 +451,7 @@ static ssize_t store_cache_disable(struct cacheinfo *this_leaf,
 	err = amd_set_l3_disable_slot(nb, cpu, slot, val);
 	if (err) {
 		if (err == -EEXIST)
-			pr_warning("L3 slot %d in use/index already disabled!\n",
+			pr_warn("L3 slot %d in use/index already disabled!\n",
 				   slot);
 		return err;
 	}
@@ -598,6 +604,10 @@ cpuid4_cache_lookup_regs(int index, struct _cpuid4_info_regs *this_leaf)
 		else
 			amd_cpuid4(index, &eax, &ebx, &ecx);
 		amd_init_l3_cache(this_leaf, index);
+	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		cpuid_count(0x8000001d, index, &eax.full,
+			    &ebx.full, &ecx.full, &edx);
+		amd_init_l3_cache(this_leaf, index);
 	} else {
 		cpuid_count(4, index, &eax.full, &ebx.full, &ecx.full, &edx);
 	}
@@ -621,7 +631,8 @@ static int find_num_cache_leaves(struct cpuinfo_x86 *c)
 	union _cpuid4_leaf_eax	cache_eax;
 	int 			i = -1;
 
-	if (c->x86_vendor == X86_VENDOR_AMD)
+	if (c->x86_vendor == X86_VENDOR_AMD ||
+	    c->x86_vendor == X86_VENDOR_HYGON)
 		op = 0x8000001d;
 	else
 		op = 4;
@@ -633,6 +644,60 @@ static int find_num_cache_leaves(struct cpuinfo_x86 *c)
 		cache_eax.full = eax;
 	} while (cache_eax.split.type != CTYPE_NULL);
 	return i;
+}
+
+void cacheinfo_amd_init_llc_id(struct cpuinfo_x86 *c, int cpu, u8 node_id)
+{
+	/*
+	 * We may have multiple LLCs if L3 caches exist, so check if we
+	 * have an L3 cache by looking at the L3 cache CPUID leaf.
+	 */
+	if (!cpuid_edx(0x80000006))
+		return;
+
+	if (c->x86 < 0x17) {
+		/* LLC is at the node level. */
+		per_cpu(cpu_llc_id, cpu) = node_id;
+	} else if (c->x86 == 0x17 && c->x86_model <= 0x1F) {
+		/*
+		 * LLC is at the core complex level.
+		 * Core complex ID is ApicId[3] for these processors.
+		 */
+		per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
+	} else {
+		/*
+		 * LLC ID is calculated from the number of threads sharing the
+		 * cache.
+		 * */
+		u32 eax, ebx, ecx, edx, num_sharing_cache = 0;
+		u32 llc_index = find_num_cache_leaves(c) - 1;
+
+		cpuid_count(0x8000001d, llc_index, &eax, &ebx, &ecx, &edx);
+		if (eax)
+			num_sharing_cache = ((eax >> 14) & 0xfff) + 1;
+
+		if (num_sharing_cache) {
+			int bits = get_count_order(num_sharing_cache);
+
+			per_cpu(cpu_llc_id, cpu) = c->apicid >> bits;
+		}
+	}
+}
+
+void cacheinfo_hygon_init_llc_id(struct cpuinfo_x86 *c, int cpu, u8 node_id)
+{
+	/*
+	 * We may have multiple LLCs if L3 caches exist, so check if we
+	 * have an L3 cache by looking at the L3 cache CPUID leaf.
+	 */
+	if (!cpuid_edx(0x80000006))
+		return;
+
+	/*
+	 * LLC is at the core complex level.
+	 * Core complex ID is ApicId[3] for these processors.
+	 */
+	per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
 }
 
 void init_amd_cacheinfo(struct cpuinfo_x86 *c)
@@ -648,7 +713,12 @@ void init_amd_cacheinfo(struct cpuinfo_x86 *c)
 	}
 }
 
-unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c)
+void init_hygon_cacheinfo(struct cpuinfo_x86 *c)
+{
+	num_cache_leaves = find_num_cache_leaves(c);
+}
+
+void init_intel_cacheinfo(struct cpuinfo_x86 *c)
 {
 	/* Cache sizes */
 	unsigned int trace = 0, l1i = 0, l1d = 0, l2 = 0, l3 = 0;
@@ -800,7 +870,8 @@ unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c)
 
 	c->x86_cache_size = l3 ? l3 : (l2 ? l2 : (l1i+l1d));
 
-	return l2;
+	if (!l2)
+		cpu_detect_cache_sizes(c);
 }
 
 static int __cache_amd_cpumap_setup(unsigned int cpu, int index,
@@ -810,10 +881,26 @@ static int __cache_amd_cpumap_setup(unsigned int cpu, int index,
 	struct cacheinfo *this_leaf;
 	int i, sibling;
 
-	if (boot_cpu_has(X86_FEATURE_TOPOEXT)) {
+	/*
+	 * For L3, always use the pre-calculated cpu_llc_shared_mask
+	 * to derive shared_cpu_map.
+	 */
+	if (index == 3) {
+		for_each_cpu(i, cpu_llc_shared_mask(cpu)) {
+			this_cpu_ci = get_cpu_cacheinfo(i);
+			if (!this_cpu_ci->info_list)
+				continue;
+			this_leaf = this_cpu_ci->info_list + index;
+			for_each_cpu(sibling, cpu_llc_shared_mask(cpu)) {
+				if (!cpu_online(sibling))
+					continue;
+				cpumask_set_cpu(sibling,
+						&this_leaf->shared_cpu_map);
+			}
+		}
+	} else if (boot_cpu_has(X86_FEATURE_TOPOEXT)) {
 		unsigned int apicid, nshared, first, last;
 
-		this_leaf = this_cpu_ci->info_list + index;
 		nshared = base->eax.split.num_threads_sharing + 1;
 		apicid = cpu_data(cpu).apicid;
 		first = apicid - (apicid % nshared);
@@ -838,19 +925,6 @@ static int __cache_amd_cpumap_setup(unsigned int cpu, int index,
 						&this_leaf->shared_cpu_map);
 			}
 		}
-	} else if (index == 3) {
-		for_each_cpu(i, cpu_llc_shared_mask(cpu)) {
-			this_cpu_ci = get_cpu_cacheinfo(i);
-			if (!this_cpu_ci->info_list)
-				continue;
-			this_leaf = this_cpu_ci->info_list + index;
-			for_each_cpu(sibling, cpu_llc_shared_mask(cpu)) {
-				if (!cpu_online(sibling))
-					continue;
-				cpumask_set_cpu(sibling,
-						&this_leaf->shared_cpu_map);
-			}
-		}
 	} else
 		return 0;
 
@@ -866,7 +940,8 @@ static void __cache_cpumap_setup(unsigned int cpu, int index,
 	int index_msb, i;
 	struct cpuinfo_x86 *c = &cpu_data(cpu);
 
-	if (c->x86_vendor == X86_VENDOR_AMD) {
+	if (c->x86_vendor == X86_VENDOR_AMD ||
+	    c->x86_vendor == X86_VENDOR_HYGON) {
 		if (__cache_amd_cpumap_setup(cpu, index, base))
 			return;
 	}
@@ -895,6 +970,8 @@ static void __cache_cpumap_setup(unsigned int cpu, int index,
 static void ci_leaf_init(struct cacheinfo *this_leaf,
 			 struct _cpuid4_info_regs *base)
 {
+	this_leaf->id = base->id;
+	this_leaf->attributes = CACHE_ID;
 	this_leaf->level = base->eax.split.level;
 	this_leaf->type = cache_type_map[base->eax.split.type];
 	this_leaf->coherency_line_size =
@@ -921,6 +998,22 @@ static int __init_cache_level(unsigned int cpu)
 	return 0;
 }
 
+/*
+ * The max shared threads number comes from CPUID.4:EAX[25-14] with input
+ * ECX as cache index. Then right shift apicid by the number's order to get
+ * cache id for this cache node.
+ */
+static void get_cache_id(int cpu, struct _cpuid4_info_regs *id4_regs)
+{
+	struct cpuinfo_x86 *c = &cpu_data(cpu);
+	unsigned long num_threads_sharing;
+	int index_msb;
+
+	num_threads_sharing = 1 + id4_regs->eax.split.num_threads_sharing;
+	index_msb = get_count_order(num_threads_sharing);
+	id4_regs->id = c->apicid >> index_msb;
+}
+
 static int __populate_cache_leaves(unsigned int cpu)
 {
 	unsigned int idx, ret;
@@ -932,6 +1025,7 @@ static int __populate_cache_leaves(unsigned int cpu)
 		ret = cpuid4_cache_lookup_regs(idx, &id4_regs);
 		if (ret)
 			return ret;
+		get_cache_id(cpu, &id4_regs);
 		ci_leaf_init(this_leaf++, &id4_regs);
 		__cache_cpumap_setup(cpu, idx, &id4_regs);
 	}

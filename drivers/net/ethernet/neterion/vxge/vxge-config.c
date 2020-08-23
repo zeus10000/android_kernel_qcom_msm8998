@@ -13,8 +13,8 @@
  ******************************************************************************/
 #include <linux/vmalloc.h>
 #include <linux/etherdevice.h>
+#include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/pci.h>
-#include <linux/pci_hotplug.h>
 #include <linux/slab.h>
 
 #include "vxge-traffic.h"
@@ -693,7 +693,7 @@ __vxge_hw_device_is_privilaged(u32 host_type, u32 func_id)
 		VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM)
 		return VXGE_HW_OK;
 	else
-		return VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+		return VXGE_HW_ERR_PRIVILEGED_OPERATION;
 }
 
 /*
@@ -808,7 +808,7 @@ __vxge_hw_vpath_fw_ver_get(struct __vxge_hw_virtualpath *vpath,
 	struct vxge_hw_device_date *fw_date = &hw_info->fw_date;
 	struct vxge_hw_device_version *flash_version = &hw_info->flash_version;
 	struct vxge_hw_device_date *flash_date = &hw_info->flash_date;
-	u64 data0, data1 = 0, steer_ctrl = 0;
+	u64 data0 = 0, data1 = 0, steer_ctrl = 0;
 	enum vxge_hw_status status;
 
 	status = vxge_hw_vpath_fw_api(vpath,
@@ -1095,20 +1095,17 @@ static void __vxge_hw_blockpool_destroy(struct __vxge_hw_blockpool *blockpool)
 {
 	struct __vxge_hw_device *hldev;
 	struct list_head *p, *n;
-	u16 ret;
 
-	if (blockpool == NULL) {
-		ret = 1;
-		goto exit;
-	}
+	if (!blockpool)
+		return;
 
 	hldev = blockpool->hldev;
 
 	list_for_each_safe(p, n, &blockpool->free_block_list) {
-		pci_unmap_single(hldev->pdev,
-			((struct __vxge_hw_blockpool_entry *)p)->dma_addr,
-			((struct __vxge_hw_blockpool_entry *)p)->length,
-			PCI_DMA_BIDIRECTIONAL);
+		dma_unmap_single(&hldev->pdev->dev,
+				 ((struct __vxge_hw_blockpool_entry *)p)->dma_addr,
+				 ((struct __vxge_hw_blockpool_entry *)p)->length,
+				 DMA_BIDIRECTIONAL);
 
 		vxge_os_dma_free(hldev->pdev,
 			((struct __vxge_hw_blockpool_entry *)p)->memblock,
@@ -1123,8 +1120,7 @@ static void __vxge_hw_blockpool_destroy(struct __vxge_hw_blockpool *blockpool)
 		list_del(&((struct __vxge_hw_blockpool_entry *)p)->item);
 		kfree((void *)p);
 	}
-	ret = 0;
-exit:
+
 	return;
 }
 
@@ -1182,10 +1178,10 @@ __vxge_hw_blockpool_create(struct __vxge_hw_device *hldev,
 			goto blockpool_create_exit;
 		}
 
-		dma_addr = pci_map_single(hldev->pdev, memblock,
-				VXGE_HW_BLOCK_SIZE, PCI_DMA_BIDIRECTIONAL);
-		if (unlikely(pci_dma_mapping_error(hldev->pdev,
-				dma_addr))) {
+		dma_addr = dma_map_single(&hldev->pdev->dev, memblock,
+					  VXGE_HW_BLOCK_SIZE,
+					  DMA_BIDIRECTIONAL);
+		if (unlikely(dma_mapping_error(&hldev->pdev->dev, dma_addr))) {
 			vxge_os_dma_free(hldev->pdev, memblock, &acc_handle);
 			__vxge_hw_blockpool_destroy(blockpool);
 			status = VXGE_HW_ERR_OUT_OF_MEMORY;
@@ -1920,7 +1916,7 @@ enum vxge_hw_status vxge_hw_device_getpause_data(struct __vxge_hw_device *hldev,
 	}
 
 	if (!(hldev->access_rights & VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM)) {
-		status = VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+		status = VXGE_HW_ERR_PRIVILEGED_OPERATION;
 		goto exit;
 	}
 
@@ -2260,24 +2256,20 @@ static void vxge_hw_blockpool_block_add(struct __vxge_hw_device *devh,
 	struct __vxge_hw_blockpool *blockpool;
 	struct __vxge_hw_blockpool_entry *entry = NULL;
 	dma_addr_t dma_addr;
-	enum vxge_hw_status status = VXGE_HW_OK;
-	u32 req_out;
 
 	blockpool = &devh->block_pool;
 
 	if (block_addr == NULL) {
 		blockpool->req_out--;
-		status = VXGE_HW_FAIL;
 		goto exit;
 	}
 
-	dma_addr = pci_map_single(devh->pdev, block_addr, length,
-				PCI_DMA_BIDIRECTIONAL);
+	dma_addr = dma_map_single(&devh->pdev->dev, block_addr, length,
+				  DMA_BIDIRECTIONAL);
 
-	if (unlikely(pci_dma_mapping_error(devh->pdev, dma_addr))) {
+	if (unlikely(dma_mapping_error(&devh->pdev->dev, dma_addr))) {
 		vxge_os_dma_free(devh->pdev, block_addr, &acc_handle);
 		blockpool->req_out--;
-		status = VXGE_HW_FAIL;
 		goto exit;
 	}
 
@@ -2292,7 +2284,7 @@ static void vxge_hw_blockpool_block_add(struct __vxge_hw_device *devh,
 	else
 		list_del(&entry->item);
 
-	if (entry != NULL) {
+	if (entry) {
 		entry->length = length;
 		entry->memblock = block_addr;
 		entry->dma_addr = dma_addr;
@@ -2300,13 +2292,10 @@ static void vxge_hw_blockpool_block_add(struct __vxge_hw_device *devh,
 		entry->dma_handle = dma_h;
 		list_add(&entry->item, &blockpool->free_block_list);
 		blockpool->pool_size++;
-		status = VXGE_HW_OK;
-	} else
-		status = VXGE_HW_ERR_OUT_OF_MEMORY;
+	}
 
 	blockpool->req_out--;
 
-	req_out = blockpool->req_out;
 exit:
 	return;
 }
@@ -2358,7 +2347,6 @@ static void *__vxge_hw_blockpool_malloc(struct __vxge_hw_device *devh, u32 size,
 	struct __vxge_hw_blockpool_entry *entry = NULL;
 	struct __vxge_hw_blockpool  *blockpool;
 	void *memblock = NULL;
-	enum vxge_hw_status status = VXGE_HW_OK;
 
 	blockpool = &devh->block_pool;
 
@@ -2368,19 +2356,16 @@ static void *__vxge_hw_blockpool_malloc(struct __vxge_hw_device *devh, u32 size,
 						&dma_object->handle,
 						&dma_object->acc_handle);
 
-		if (memblock == NULL) {
-			status = VXGE_HW_ERR_OUT_OF_MEMORY;
+		if (!memblock)
 			goto exit;
-		}
 
-		dma_object->addr = pci_map_single(devh->pdev, memblock, size,
-					PCI_DMA_BIDIRECTIONAL);
+		dma_object->addr = dma_map_single(&devh->pdev->dev, memblock,
+						  size, DMA_BIDIRECTIONAL);
 
-		if (unlikely(pci_dma_mapping_error(devh->pdev,
-				dma_object->addr))) {
+		if (unlikely(dma_mapping_error(&devh->pdev->dev, dma_object->addr))) {
 			vxge_os_dma_free(devh->pdev, memblock,
 				&dma_object->acc_handle);
-			status = VXGE_HW_ERR_OUT_OF_MEMORY;
+			memblock = NULL;
 			goto exit;
 		}
 
@@ -2424,11 +2409,10 @@ __vxge_hw_blockpool_blocks_remove(struct __vxge_hw_blockpool *blockpool)
 		if (blockpool->pool_size < blockpool->pool_max)
 			break;
 
-		pci_unmap_single(
-			(blockpool->hldev)->pdev,
-			((struct __vxge_hw_blockpool_entry *)p)->dma_addr,
-			((struct __vxge_hw_blockpool_entry *)p)->length,
-			PCI_DMA_BIDIRECTIONAL);
+		dma_unmap_single(&(blockpool->hldev)->pdev->dev,
+				 ((struct __vxge_hw_blockpool_entry *)p)->dma_addr,
+				 ((struct __vxge_hw_blockpool_entry *)p)->length,
+				 DMA_BIDIRECTIONAL);
 
 		vxge_os_dma_free(
 			(blockpool->hldev)->pdev,
@@ -2459,8 +2443,8 @@ static void __vxge_hw_blockpool_free(struct __vxge_hw_device *devh,
 	blockpool = &devh->block_pool;
 
 	if (size != blockpool->block_size) {
-		pci_unmap_single(devh->pdev, dma_object->addr, size,
-			PCI_DMA_BIDIRECTIONAL);
+		dma_unmap_single(&devh->pdev->dev, dma_object->addr, size,
+				 DMA_BIDIRECTIONAL);
 		vxge_os_dma_free(devh->pdev, memblock, &dma_object->acc_handle);
 	} else {
 
@@ -3154,7 +3138,7 @@ vxge_hw_mgmt_reg_read(struct __vxge_hw_device *hldev,
 	case vxge_hw_mgmt_reg_type_mrpcim:
 		if (!(hldev->access_rights &
 			VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM)) {
-			status = VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+			status = VXGE_HW_ERR_PRIVILEGED_OPERATION;
 			break;
 		}
 		if (offset > sizeof(struct vxge_hw_mrpcim_reg) - 8) {
@@ -3166,7 +3150,7 @@ vxge_hw_mgmt_reg_read(struct __vxge_hw_device *hldev,
 	case vxge_hw_mgmt_reg_type_srpcim:
 		if (!(hldev->access_rights &
 			VXGE_HW_DEVICE_ACCESS_RIGHT_SRPCIM)) {
-			status = VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+			status = VXGE_HW_ERR_PRIVILEGED_OPERATION;
 			break;
 		}
 		if (index > VXGE_HW_TITAN_SRPCIM_REG_SPACES - 1) {
@@ -3280,7 +3264,7 @@ vxge_hw_mgmt_reg_write(struct __vxge_hw_device *hldev,
 	case vxge_hw_mgmt_reg_type_mrpcim:
 		if (!(hldev->access_rights &
 			VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM)) {
-			status = VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+			status = VXGE_HW_ERR_PRIVILEGED_OPERATION;
 			break;
 		}
 		if (offset > sizeof(struct vxge_hw_mrpcim_reg) - 8) {
@@ -3292,7 +3276,7 @@ vxge_hw_mgmt_reg_write(struct __vxge_hw_device *hldev,
 	case vxge_hw_mgmt_reg_type_srpcim:
 		if (!(hldev->access_rights &
 			VXGE_HW_DEVICE_ACCESS_RIGHT_SRPCIM)) {
-			status = VXGE_HW_ERR_PRIVILAGED_OPEARATION;
+			status = VXGE_HW_ERR_PRIVILEGED_OPERATION;
 			break;
 		}
 		if (index > VXGE_HW_TITAN_SRPCIM_REG_SPACES - 1) {
@@ -3784,17 +3768,20 @@ vxge_hw_rts_rth_data0_data1_get(u32 j, u64 *data0, u64 *data1,
 			VXGE_HW_RTS_ACCESS_STEER_DATA0_RTH_ITEM0_ENTRY_EN |
 			VXGE_HW_RTS_ACCESS_STEER_DATA0_RTH_ITEM0_BUCKET_DATA(
 			itable[j]);
+		fallthrough;
 	case 2:
 		*data0 |=
 			VXGE_HW_RTS_ACCESS_STEER_DATA0_RTH_ITEM1_BUCKET_NUM(j)|
 			VXGE_HW_RTS_ACCESS_STEER_DATA0_RTH_ITEM1_ENTRY_EN |
 			VXGE_HW_RTS_ACCESS_STEER_DATA0_RTH_ITEM1_BUCKET_DATA(
 			itable[j]);
+		fallthrough;
 	case 3:
 		*data1 = VXGE_HW_RTS_ACCESS_STEER_DATA1_RTH_ITEM0_BUCKET_NUM(j)|
 			VXGE_HW_RTS_ACCESS_STEER_DATA1_RTH_ITEM0_ENTRY_EN |
 			VXGE_HW_RTS_ACCESS_STEER_DATA1_RTH_ITEM0_BUCKET_DATA(
 			itable[j]);
+		fallthrough;
 	case 4:
 		*data1 |=
 			VXGE_HW_RTS_ACCESS_STEER_DATA1_RTH_ITEM1_BUCKET_NUM(j)|

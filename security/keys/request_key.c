@@ -267,26 +267,26 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 				}
 			}
 
-			/* fall through */
+			fallthrough;
 		case KEY_REQKEY_DEFL_THREAD_KEYRING:
 			dest_keyring = key_get(cred->thread_keyring);
 			if (dest_keyring)
 				break;
 
-			/* fall through */
+			fallthrough;
 		case KEY_REQKEY_DEFL_PROCESS_KEYRING:
 			dest_keyring = key_get(cred->process_keyring);
 			if (dest_keyring)
 				break;
 
-			/* fall through */
+			fallthrough;
 		case KEY_REQKEY_DEFL_SESSION_KEYRING:
 			dest_keyring = key_get(cred->session_keyring);
 
 			if (dest_keyring)
 				break;
 
-			/* fall through */
+			fallthrough;
 		case KEY_REQKEY_DEFL_USER_SESSION_KEYRING:
 			dest_keyring =
 				key_get(READ_ONCE(cred->user->session_keyring));

@@ -121,6 +121,7 @@ static irqreturn_t max8925_charger_handler(int irq, void *data)
 	case MAX8925_IRQ_VCHG_THM_OK_F:
 		/* Battery is not ready yet */
 		dev_dbg(chip->dev, "Battery temperature is out of range\n");
+		fallthrough;
 	case MAX8925_IRQ_VCHG_DC_OVP:
 		dev_dbg(chip->dev, "Error detection\n");
 		__set_charger(info, 0);
@@ -537,14 +538,14 @@ static int max8925_power_probe(struct platform_device *pdev)
 	info->usb = power_supply_register(&pdev->dev, &usb_desc, &psy_cfg);
 	if (IS_ERR(info->usb)) {
 		ret = PTR_ERR(info->usb);
-		goto out_usb;
+		goto out_unregister_ac;
 	}
 	info->usb->dev.parent = &pdev->dev;
 
 	info->battery = power_supply_register(&pdev->dev, &battery_desc, NULL);
 	if (IS_ERR(info->battery)) {
 		ret = PTR_ERR(info->battery);
-		goto out_battery;
+		goto out_unregister_usb;
 	}
 	info->battery->dev.parent = &pdev->dev;
 
@@ -557,9 +558,9 @@ static int max8925_power_probe(struct platform_device *pdev)
 
 	max8925_init_charger(chip, info);
 	return 0;
-out_battery:
-	power_supply_unregister(info->battery);
-out_usb:
+out_unregister_usb:
+	power_supply_unregister(info->usb);
+out_unregister_ac:
 	power_supply_unregister(info->ac);
 out:
 	return ret;

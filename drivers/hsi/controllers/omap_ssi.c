@@ -1,30 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* OMAP SSI driver.
  *
  * Copyright (C) 2010 Nokia Corporation. All rights reserved.
  * Copyright (C) 2014 Sebastian Reichel <sre@kernel.org>
  *
  * Contact: Carlos Chinea <carlos.chinea@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <linux/compiler.h>
 #include <linux/err.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
-#include <linux/gpio.h>
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
@@ -36,6 +22,7 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/debugfs.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/of_platform.h>
 #include <linux/hsi/hsi.h>
@@ -48,7 +35,7 @@
 static DEFINE_IDA(platform_omap_ssi_ida);
 
 #ifdef CONFIG_DEBUG_FS
-static int ssi_debug_show(struct seq_file *m, void *p __maybe_unused)
+static int ssi_regs_show(struct seq_file *m, void *p __maybe_unused)
 {
 	struct hsi_controller *ssi = m->private;
 	struct omap_ssi_controller *omap_ssi = hsi_controller_drvdata(ssi);
@@ -58,12 +45,12 @@ static int ssi_debug_show(struct seq_file *m, void *p __maybe_unused)
 	seq_printf(m, "REVISION\t: 0x%08x\n",  readl(sys + SSI_REVISION_REG));
 	seq_printf(m, "SYSCONFIG\t: 0x%08x\n", readl(sys + SSI_SYSCONFIG_REG));
 	seq_printf(m, "SYSSTATUS\t: 0x%08x\n", readl(sys + SSI_SYSSTATUS_REG));
-	pm_runtime_put_sync(ssi->device.parent);
+	pm_runtime_put(ssi->device.parent);
 
 	return 0;
 }
 
-static int ssi_debug_gdd_show(struct seq_file *m, void *p __maybe_unused)
+static int ssi_gdd_regs_show(struct seq_file *m, void *p __maybe_unused)
 {
 	struct hsi_controller *ssi = m->private;
 	struct omap_ssi_controller *omap_ssi = hsi_controller_drvdata(ssi);
@@ -112,36 +99,15 @@ static int ssi_debug_gdd_show(struct seq_file *m, void *p __maybe_unused)
 				readw(gdd + SSI_GDD_CLNK_CTRL_REG(lch)));
 	}
 
-	pm_runtime_put_sync(ssi->device.parent);
+	pm_runtime_put(ssi->device.parent);
 
 	return 0;
 }
 
-static int ssi_regs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ssi_debug_show, inode->i_private);
-}
+DEFINE_SHOW_ATTRIBUTE(ssi_regs);
+DEFINE_SHOW_ATTRIBUTE(ssi_gdd_regs);
 
-static int ssi_gdd_regs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ssi_debug_gdd_show, inode->i_private);
-}
-
-static const struct file_operations ssi_regs_fops = {
-	.open		= ssi_regs_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static const struct file_operations ssi_gdd_regs_fops = {
-	.open		= ssi_gdd_regs_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int __init ssi_debug_add_ctrl(struct hsi_controller *ssi)
+static int ssi_debug_add_ctrl(struct hsi_controller *ssi)
 {
 	struct omap_ssi_controller *omap_ssi = hsi_controller_drvdata(ssi);
 	struct dentry *dir;
@@ -193,7 +159,7 @@ void ssi_waketest(struct hsi_client *cl, unsigned int enable)
 	} else {
 		writel_relaxed(SSI_WAKE(0),
 				omap_ssi->sys +	SSI_CLEAR_WAKE_REG(port->num));
-		pm_runtime_put_sync(ssi->device.parent);
+		pm_runtime_put(ssi->device.parent);
 	}
 }
 EXPORT_SYMBOL_GPL(ssi_waketest);
@@ -217,7 +183,7 @@ static void ssi_gdd_complete(struct hsi_controller *ssi, unsigned int lch)
 	if (msg->ttype == HSI_MSG_READ) {
 		dir = DMA_FROM_DEVICE;
 		val = SSI_DATAAVAILABLE(msg->channel);
-		pm_runtime_put_sync(ssi->device.parent);
+		pm_runtime_put(omap_port->pdev);
 	} else {
 		dir = DMA_TO_DEVICE;
 		val = SSI_DATAACCEPT(msg->channel);
@@ -235,7 +201,9 @@ static void ssi_gdd_complete(struct hsi_controller *ssi, unsigned int lch)
 		spin_lock(&omap_port->lock);
 		list_del(&msg->link); /* Dequeue msg */
 		spin_unlock(&omap_port->lock);
-		msg->complete(msg);
+
+		list_add_tail(&msg->link, &omap_port->errqueue);
+		schedule_delayed_work(&omap_port->errqueue_work, 0);
 		return;
 	}
 	spin_lock(&omap_port->lock);
@@ -255,7 +223,13 @@ static void ssi_gdd_tasklet(unsigned long dev)
 	unsigned int lch;
 	u32 status_reg;
 
-	pm_runtime_get_sync(ssi->device.parent);
+	pm_runtime_get(ssi->device.parent);
+
+	if (!pm_runtime_active(ssi->device.parent)) {
+		dev_warn(ssi->device.parent, "ssi_gdd_tasklet called without runtime PM!\n");
+		pm_runtime_put(ssi->device.parent);
+		return;
+	}
 
 	status_reg = readl(sys + SSI_GDD_MPU_IRQ_STATUS_REG);
 	for (lch = 0; lch < SSI_MAX_GDD_LCH; lch++) {
@@ -265,7 +239,7 @@ static void ssi_gdd_tasklet(unsigned long dev)
 	writel_relaxed(status_reg, sys + SSI_GDD_MPU_IRQ_STATUS_REG);
 	status_reg = readl(sys + SSI_GDD_MPU_IRQ_STATUS_REG);
 
-	pm_runtime_put_sync(ssi->device.parent);
+	pm_runtime_put(ssi->device.parent);
 
 	if (status_reg)
 		tasklet_hi_schedule(&omap_ssi->gdd_tasklet);
@@ -291,7 +265,65 @@ static unsigned long ssi_get_clk_rate(struct hsi_controller *ssi)
 	return rate;
 }
 
-static int __init ssi_get_iomem(struct platform_device *pd,
+static int ssi_clk_event(struct notifier_block *nb, unsigned long event,
+								void *data)
+{
+	struct omap_ssi_controller *omap_ssi = container_of(nb,
+					struct omap_ssi_controller, fck_nb);
+	struct hsi_controller *ssi = to_hsi_controller(omap_ssi->dev);
+	struct clk_notifier_data *clk_data = data;
+	struct omap_ssi_port *omap_port;
+	int i;
+
+	switch (event) {
+	case PRE_RATE_CHANGE:
+		dev_dbg(&ssi->device, "pre rate change\n");
+
+		for (i = 0; i < ssi->num_ports; i++) {
+			omap_port = omap_ssi->port[i];
+
+			if (!omap_port)
+				continue;
+
+			/* Workaround for SWBREAK + CAwake down race in CMT */
+			disable_irq(omap_port->wake_irq);
+
+			/* stop all ssi communication */
+			pinctrl_pm_select_idle_state(omap_port->pdev);
+			udelay(1); /* wait for racing frames */
+		}
+
+		break;
+	case ABORT_RATE_CHANGE:
+		dev_dbg(&ssi->device, "abort rate change\n");
+		fallthrough;
+	case POST_RATE_CHANGE:
+		dev_dbg(&ssi->device, "post rate change (%lu -> %lu)\n",
+			clk_data->old_rate, clk_data->new_rate);
+		omap_ssi->fck_rate = DIV_ROUND_CLOSEST(clk_data->new_rate, 1000); /* kHz */
+
+		for (i = 0; i < ssi->num_ports; i++) {
+			omap_port = omap_ssi->port[i];
+
+			if (!omap_port)
+				continue;
+
+			omap_ssi_port_update_fclk(ssi, omap_port);
+
+			/* resume ssi communication */
+			pinctrl_pm_select_default_state(omap_port->pdev);
+			enable_irq(omap_port->wake_irq);
+		}
+
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static int ssi_get_iomem(struct platform_device *pd,
 		const char *name, void __iomem **pbase, dma_addr_t *phy)
 {
 	struct resource *mem;
@@ -311,23 +343,20 @@ static int __init ssi_get_iomem(struct platform_device *pd,
 	return 0;
 }
 
-static int __init ssi_add_controller(struct hsi_controller *ssi,
+static int ssi_add_controller(struct hsi_controller *ssi,
 						struct platform_device *pd)
 {
 	struct omap_ssi_controller *omap_ssi;
 	int err;
 
 	omap_ssi = devm_kzalloc(&ssi->device, sizeof(*omap_ssi), GFP_KERNEL);
-	if (!omap_ssi) {
-		dev_err(&pd->dev, "not enough memory for omap ssi\n");
+	if (!omap_ssi)
 		return -ENOMEM;
-	}
 
-	ssi->id = ida_simple_get(&platform_omap_ssi_ida, 0, 0, GFP_KERNEL);
-	if (ssi->id < 0) {
-		err = ssi->id;
+	err = ida_simple_get(&platform_omap_ssi_ida, 0, 0, GFP_KERNEL);
+	if (err < 0)
 		goto out_err;
-	}
+	ssi->id = err;
 
 	ssi->owner = THIS_MODULE;
 	ssi->device.parent = &pd->dev;
@@ -341,10 +370,8 @@ static int __init ssi_add_controller(struct hsi_controller *ssi,
 	if (err < 0)
 		goto out_err;
 	err = platform_get_irq_byname(pd, "gdd_mpu");
-	if (err < 0) {
-		dev_err(&pd->dev, "GDD IRQ resource missing\n");
+	if (err < 0)
 		goto out_err;
-	}
 	omap_ssi->gdd_irq = err;
 	tasklet_init(&omap_ssi->gdd_tasklet, ssi_gdd_tasklet,
 							(unsigned long)ssi);
@@ -356,8 +383,8 @@ static int __init ssi_add_controller(struct hsi_controller *ssi,
 		goto out_err;
 	}
 
-	omap_ssi->port = devm_kzalloc(&ssi->device,
-		sizeof(struct omap_ssi_port *) * ssi->num_ports, GFP_KERNEL);
+	omap_ssi->port = devm_kcalloc(&ssi->device, ssi->num_ports,
+				      sizeof(*omap_ssi->port), GFP_KERNEL);
 	if (!omap_ssi->port) {
 		err = -ENOMEM;
 		goto out_err;
@@ -370,6 +397,10 @@ static int __init ssi_add_controller(struct hsi_controller *ssi,
 		err = -ENODEV;
 		goto out_err;
 	}
+
+	omap_ssi->fck_nb.notifier_call = ssi_clk_event;
+	omap_ssi->fck_nb.priority = INT_MAX;
+	clk_notifier_register(omap_ssi->fck, &omap_ssi->fck_nb);
 
 	/* TODO: find register, which can be used to detect context loss */
 	omap_ssi->get_loss = NULL;
@@ -388,11 +419,9 @@ out_err:
 	return err;
 }
 
-static int __init ssi_hw_init(struct hsi_controller *ssi)
+static int ssi_hw_init(struct hsi_controller *ssi)
 {
 	struct omap_ssi_controller *omap_ssi = hsi_controller_drvdata(ssi);
-	unsigned int i;
-	u32 val;
 	int err;
 
 	err = pm_runtime_get_sync(ssi->device.parent);
@@ -400,27 +429,12 @@ static int __init ssi_hw_init(struct hsi_controller *ssi)
 		dev_err(&ssi->device, "runtime PM failed %d\n", err);
 		return err;
 	}
-	/* Reseting SSI controller */
-	writel_relaxed(SSI_SOFTRESET, omap_ssi->sys + SSI_SYSCONFIG_REG);
-	val = readl(omap_ssi->sys + SSI_SYSSTATUS_REG);
-	for (i = 0; ((i < 20) && !(val & SSI_RESETDONE)); i++) {
-		msleep(20);
-		val = readl(omap_ssi->sys + SSI_SYSSTATUS_REG);
-	}
-	if (!(val & SSI_RESETDONE)) {
-		dev_err(&ssi->device, "SSI HW reset failed\n");
-		pm_runtime_put_sync(ssi->device.parent);
-		return -EIO;
-	}
-	/* Reseting GDD */
+	/* Resetting GDD */
 	writel_relaxed(SSI_SWRESET, omap_ssi->gdd + SSI_GDD_GRST_REG);
-	/* Get FCK rate in KHz */
+	/* Get FCK rate in kHz */
 	omap_ssi->fck_rate = DIV_ROUND_CLOSEST(ssi_get_clk_rate(ssi), 1000);
-	dev_dbg(&ssi->device, "SSI fck rate %lu KHz\n", omap_ssi->fck_rate);
-	/* Set default PM settings */
-	val = SSI_AUTOIDLE | SSI_SIDLEMODE_SMART | SSI_MIDLEMODE_SMART;
-	writel_relaxed(val, omap_ssi->sys + SSI_SYSCONFIG_REG);
-	omap_ssi->sysconfig = val;
+	dev_dbg(&ssi->device, "SSI fck rate %lu kHz\n", omap_ssi->fck_rate);
+
 	writel_relaxed(SSI_CLK_AUTOGATING_ON, omap_ssi->sys + SSI_GDD_GCR_REG);
 	omap_ssi->gdd_gcr = SSI_CLK_AUTOGATING_ON;
 	pm_runtime_put_sync(ssi->device.parent);
@@ -434,6 +448,7 @@ static void ssi_remove_controller(struct hsi_controller *ssi)
 	int id = ssi->id;
 	tasklet_kill(&omap_ssi->gdd_tasklet);
 	hsi_unregister_controller(ssi);
+	clk_notifier_unregister(omap_ssi->fck, &omap_ssi->fck_nb);
 	ida_simple_remove(&platform_omap_ssi_ida, id);
 }
 
@@ -453,12 +468,16 @@ static int ssi_remove_ports(struct device *dev, void *c)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 
+	if (!dev->of_node)
+		return 0;
+
+	of_node_clear_flag(dev->of_node, OF_POPULATED);
 	of_device_unregister(pdev);
 
 	return 0;
 }
 
-static int __init ssi_probe(struct platform_device *pd)
+static int ssi_probe(struct platform_device *pd)
 {
 	struct platform_device *childpdev;
 	struct device_node *np = pd->dev.of_node;
@@ -486,7 +505,6 @@ static int __init ssi_probe(struct platform_device *pd)
 	if (err < 0)
 		goto out1;
 
-	pm_runtime_irq_safe(&pd->dev);
 	pm_runtime_enable(&pd->dev);
 
 	err = ssi_hw_init(ssi);
@@ -524,9 +542,12 @@ out1:
 	return err;
 }
 
-static int __exit ssi_remove(struct platform_device *pd)
+static int ssi_remove(struct platform_device *pd)
 {
 	struct hsi_controller *ssi = platform_get_drvdata(pd);
+
+	/* cleanup of of_platform_populate() call */
+	device_for_each_child(&pd->dev, NULL, ssi_remove_ports);
 
 #ifdef CONFIG_DEBUG_FS
 	ssi_debug_remove_ctrl(ssi);
@@ -535,9 +556,6 @@ static int __exit ssi_remove(struct platform_device *pd)
 	platform_set_drvdata(pd, NULL);
 
 	pm_runtime_disable(&pd->dev);
-
-	/* cleanup of of_platform_populate() call */
-	device_for_each_child(&pd->dev, NULL, ssi_remove_ports);
 
 	return 0;
 }
@@ -594,7 +612,8 @@ MODULE_DEVICE_TABLE(of, omap_ssi_of_match);
 #endif
 
 static struct platform_driver ssi_pdriver = {
-	.remove	= __exit_p(ssi_remove),
+	.probe = ssi_probe,
+	.remove	= ssi_remove,
 	.driver	= {
 		.name	= "omap_ssi",
 		.pm     = DEV_PM_OPS,
@@ -602,7 +621,22 @@ static struct platform_driver ssi_pdriver = {
 	},
 };
 
-module_platform_driver_probe(ssi_pdriver, ssi_probe);
+static int __init ssi_init(void) {
+	int ret;
+
+	ret = platform_driver_register(&ssi_pdriver);
+	if (ret)
+		return ret;
+
+	return platform_driver_register(&ssi_port_pdriver);
+}
+module_init(ssi_init);
+
+static void __exit ssi_exit(void) {
+	platform_driver_unregister(&ssi_port_pdriver);
+	platform_driver_unregister(&ssi_pdriver);
+}
+module_exit(ssi_exit);
 
 MODULE_ALIAS("platform:omap_ssi");
 MODULE_AUTHOR("Carlos Chinea <carlos.chinea@nokia.com>");

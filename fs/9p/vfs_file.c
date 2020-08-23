@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/9p/vfs_file.c
  *
@@ -5,22 +6,6 @@
  *
  *  Copyright (C) 2004 by Eric Van Hensbergen <ericvh@gmail.com>
  *  Copyright (C) 2002 by Ron Minnich <rminnich@lanl.gov>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2
- *  as published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to:
- *  Free Software Foundation
- *  51 Franklin Street, Fifth Floor
- *  Boston, MA  02111-1301  USA
- *
  */
 
 #include <linux/module.h>
@@ -228,7 +213,7 @@ static int v9fs_file_do_lock(struct file *filp, int cmd, struct file_lock *fl)
 		break;
 	default:
 		WARN_ONCE(1, "unknown lock status code: %d\n", status);
-		/* fallthough */
+		fallthrough;
 	case P9_LOCK_ERROR:
 	case P9_LOCK_GRACE:
 		res = -ENOLCK;
@@ -302,7 +287,7 @@ static int v9fs_file_getlock(struct file *filp, struct file_lock *fl)
 			fl->fl_end = OFFSET_MAX;
 		else
 			fl->fl_end = glock.start + glock.length - 1;
-		fl->fl_pid = glock.proc_id;
+		fl->fl_pid = -glock.proc_id;
 	}
 out:
 	if (glock.client_id != fid->clnt->name)
@@ -403,7 +388,10 @@ v9fs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	p9_debug(P9_DEBUG_VFS, "count %zu offset %lld\n",
 		 iov_iter_count(to), iocb->ki_pos);
 
-	ret = p9_client_read(fid, iocb->ki_pos, to, &err);
+	if (iocb->ki_filp->f_flags & O_NONBLOCK)
+		ret = p9_client_read_once(fid, iocb->ki_pos, to, &err);
+	else
+		ret = p9_client_read(fid, iocb->ki_pos, to, &err);
 	if (!ret)
 		return err;
 
@@ -437,8 +425,8 @@ v9fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		struct inode *inode = file_inode(file);
 		loff_t i_size;
 		unsigned long pg_start, pg_end;
-		pg_start = origin >> PAGE_CACHE_SHIFT;
-		pg_end = (origin + retval - 1) >> PAGE_CACHE_SHIFT;
+		pg_start = origin >> PAGE_SHIFT;
+		pg_end = (origin + retval - 1) >> PAGE_SHIFT;
 		if (inode->i_mapping && inode->i_mapping->nrpages)
 			invalidate_inode_pages2_range(inode->i_mapping,
 						      pg_start, pg_end);
@@ -465,18 +453,18 @@ static int v9fs_file_fsync(struct file *filp, loff_t start, loff_t end,
 	struct p9_wstat wstat;
 	int retval;
 
-	retval = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	retval = file_write_and_wait_range(filp, start, end);
 	if (retval)
 		return retval;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	p9_debug(P9_DEBUG_VFS, "filp %p datasync %x\n", filp, datasync);
 
 	fid = filp->private_data;
 	v9fs_blank_wstat(&wstat);
 
 	retval = p9_client_wstat(fid, &wstat);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	return retval;
 }
@@ -488,17 +476,17 @@ int v9fs_file_fsync_dotl(struct file *filp, loff_t start, loff_t end,
 	struct inode *inode = filp->f_mapping->host;
 	int retval;
 
-	retval = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	retval = file_write_and_wait_range(filp, start, end);
 	if (retval)
 		return retval;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	p9_debug(P9_DEBUG_VFS, "filp %p datasync %x\n", filp, datasync);
 
 	fid = filp->private_data;
 
 	retval = p9_client_fsync(fid, datasync);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	return retval;
 }
@@ -554,12 +542,12 @@ v9fs_mmap_file_mmap(struct file *filp, struct vm_area_struct *vma)
 	return retval;
 }
 
-static int
-v9fs_vm_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
+static vm_fault_t
+v9fs_vm_page_mkwrite(struct vm_fault *vmf)
 {
 	struct v9fs_inode *v9inode;
 	struct page *page = vmf->page;
-	struct file *filp = vma->vm_file;
+	struct file *filp = vmf->vma->vm_file;
 	struct inode *inode = file_inode(filp);
 
 
@@ -624,9 +612,9 @@ static void v9fs_mmap_vm_close(struct vm_area_struct *vma)
 	struct writeback_control wbc = {
 		.nr_to_write = LONG_MAX,
 		.sync_mode = WB_SYNC_ALL,
-		.range_start = (loff_t)vma->vm_pgoff * PAGE_SIZE,
+		.range_start = vma->vm_pgoff * PAGE_SIZE,
 		 /* absolute end, byte at end included */
-		.range_end = (loff_t)vma->vm_pgoff * PAGE_SIZE +
+		.range_end = vma->vm_pgoff * PAGE_SIZE +
 			(vma->vm_end - vma->vm_start - 1),
 	};
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * omap-dmic.c  --  OMAP ASoC DMIC DAI driver
  *
@@ -7,21 +8,6 @@
  *	   Misael Lopez Cruz <misael.lopez@ti.com>
  *	   Liam Girdwood <lrg@ti.com>
  *	   Peter Ujfalusi <peter.ujfalusi@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/init.h>
@@ -40,9 +26,9 @@
 #include <sound/initval.h>
 #include <sound/soc.h>
 #include <sound/dmaengine_pcm.h>
-#include <sound/omap-pcm.h>
 
 #include "omap-dmic.h"
+#include "sdma-pcm.h"
 
 struct omap_dmic {
 	struct device *dev;
@@ -109,7 +95,7 @@ static int omap_dmic_dai_startup(struct snd_pcm_substream *substream,
 
 	mutex_lock(&dmic->mutex);
 
-	if (!dai->active)
+	if (!snd_soc_dai_active(dai))
 		dmic->active = 1;
 	else
 		ret = -EBUSY;
@@ -126,9 +112,9 @@ static void omap_dmic_dai_shutdown(struct snd_pcm_substream *substream,
 
 	mutex_lock(&dmic->mutex);
 
-	pm_qos_remove_request(&dmic->pm_qos_req);
+	cpu_latency_qos_remove_request(&dmic->pm_qos_req);
 
-	if (!dai->active)
+	if (!snd_soc_dai_active(dai))
 		dmic->active = 0;
 
 	mutex_unlock(&dmic->mutex);
@@ -217,8 +203,10 @@ static int omap_dmic_dai_hw_params(struct snd_pcm_substream *substream,
 	switch (channels) {
 	case 6:
 		dmic->ch_enabled |= OMAP_DMIC_UP3_ENABLE;
+		fallthrough;
 	case 4:
 		dmic->ch_enabled |= OMAP_DMIC_UP2_ENABLE;
+		fallthrough;
 	case 2:
 		dmic->ch_enabled |= OMAP_DMIC_UP1_ENABLE;
 		break;
@@ -242,8 +230,9 @@ static int omap_dmic_dai_prepare(struct snd_pcm_substream *substream,
 	struct omap_dmic *dmic = snd_soc_dai_get_drvdata(dai);
 	u32 ctrl;
 
-	if (pm_qos_request_active(&dmic->pm_qos_req))
-		pm_qos_update_request(&dmic->pm_qos_req, dmic->latency);
+	if (cpu_latency_qos_request_active(&dmic->pm_qos_req))
+		cpu_latency_qos_update_request(&dmic->pm_qos_req,
+					       dmic->latency);
 
 	/* Configure uplink threshold */
 	omap_dmic_write(dmic, OMAP_DMIC_FIFO_CTRL_REG, dmic->threshold);
@@ -290,7 +279,7 @@ static int omap_dmic_dai_trigger(struct snd_pcm_substream *substream,
 static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 				 unsigned int freq)
 {
-	struct clk *parent_clk;
+	struct clk *parent_clk, *mux;
 	char *parent_clk_name;
 	int ret = 0;
 
@@ -338,14 +327,21 @@ static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 		return -ENODEV;
 	}
 
+	mux = clk_get_parent(dmic->fclk);
+	if (IS_ERR(mux)) {
+		dev_err(dmic->dev, "can't get fck mux parent\n");
+		clk_put(parent_clk);
+		return -ENODEV;
+	}
+
 	mutex_lock(&dmic->mutex);
 	if (dmic->active) {
 		/* disable clock while reparenting */
 		pm_runtime_put_sync(dmic->dev);
-		ret = clk_set_parent(dmic->fclk, parent_clk);
+		ret = clk_set_parent(mux, parent_clk);
 		pm_runtime_get_sync(dmic->dev);
 	} else {
-		ret = clk_set_parent(dmic->fclk, parent_clk);
+		ret = clk_set_parent(mux, parent_clk);
 	}
 	mutex_unlock(&dmic->mutex);
 
@@ -358,6 +354,7 @@ static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 	dmic->fclk_freq = freq;
 
 err_busy:
+	clk_put(mux);
 	clk_put(parent_clk);
 
 	return ret;
@@ -502,7 +499,7 @@ static int asoc_dmic_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = omap_pcm_platform_register(&pdev->dev);
+	ret = sdma_pcm_platform_register(&pdev->dev, NULL, "up_link");
 	if (ret)
 		return ret;
 

@@ -1,29 +1,37 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * A simple MCE injection facility for testing different aspects of the RAS
- * code. This driver should be built as module so that it can be loaded
- * on production kernels for testing purposes.
+ * Machine check injection support.
+ * Copyright 2008 Intel Corporation.
  *
- * This file may be distributed under the terms of the GNU General Public
- * License version 2.
+ * Authors:
+ * Andi Kleen
+ * Ying Huang
  *
- * Copyright (c) 2010-15:  Borislav Petkov <bp@alien8.de>
- *			Advanced Micro Devices Inc.
+ * The AMD part (from mce_amd_inj.c): a simple MCE injection facility
+ * for testing different aspects of the RAS code. This driver should be
+ * built as module so that it can be loaded on production kernels for
+ * testing purposes.
+ *
+ * Copyright (c) 2010-17:  Borislav Petkov <bp@alien8.de>
+ *			   Advanced Micro Devices Inc.
  */
 
-#include <linux/kobject.h>
-#include <linux/debugfs.h>
-#include <linux/device.h>
-#include <linux/module.h>
 #include <linux/cpu.h>
-#include <linux/string.h>
-#include <linux/uaccess.h>
+#include <linux/debugfs.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/pci.h>
+#include <linux/uaccess.h>
 
-#include <asm/mce.h>
 #include <asm/amd_nb.h>
+#include <asm/apic.h>
 #include <asm/irq_vectors.h>
+#include <asm/mce.h>
+#include <asm/nmi.h>
+#include <asm/smp.h>
 
-#include "../kernel/cpu/mcheck/mce-internal.h"
+#include "internal.h"
 
 /*
  * Collect all the MCi_XXX settings
@@ -31,9 +39,7 @@
 static struct mce i_mce;
 static struct dentry *dfs_inj;
 
-static u8 n_banks;
-
-#define MAX_FLAG_OPT_SIZE	3
+#define MAX_FLAG_OPT_SIZE	4
 #define NBCFG			0x44
 
 enum injection_type {
@@ -67,6 +73,7 @@ static int inj_##reg##_set(void *data, u64 val)				\
 MCE_INJECT_SET(status);
 MCE_INJECT_SET(misc);
 MCE_INJECT_SET(addr);
+MCE_INJECT_SET(synd);
 
 #define MCE_INJECT_GET(reg)						\
 static int inj_##reg##_get(void *data, u64 *val)			\
@@ -80,10 +87,211 @@ static int inj_##reg##_get(void *data, u64 *val)			\
 MCE_INJECT_GET(status);
 MCE_INJECT_GET(misc);
 MCE_INJECT_GET(addr);
+MCE_INJECT_GET(synd);
 
 DEFINE_SIMPLE_ATTRIBUTE(status_fops, inj_status_get, inj_status_set, "%llx\n");
 DEFINE_SIMPLE_ATTRIBUTE(misc_fops, inj_misc_get, inj_misc_set, "%llx\n");
 DEFINE_SIMPLE_ATTRIBUTE(addr_fops, inj_addr_get, inj_addr_set, "%llx\n");
+DEFINE_SIMPLE_ATTRIBUTE(synd_fops, inj_synd_get, inj_synd_set, "%llx\n");
+
+static void setup_inj_struct(struct mce *m)
+{
+	memset(m, 0, sizeof(struct mce));
+
+	m->cpuvendor = boot_cpu_data.x86_vendor;
+	m->time	     = ktime_get_real_seconds();
+	m->cpuid     = cpuid_eax(1);
+	m->microcode = boot_cpu_data.microcode;
+}
+
+/* Update fake mce registers on current CPU. */
+static void inject_mce(struct mce *m)
+{
+	struct mce *i = &per_cpu(injectm, m->extcpu);
+
+	/* Make sure no one reads partially written injectm */
+	i->finished = 0;
+	mb();
+	m->finished = 0;
+	/* First set the fields after finished */
+	i->extcpu = m->extcpu;
+	mb();
+	/* Now write record in order, finished last (except above) */
+	memcpy(i, m, sizeof(struct mce));
+	/* Finally activate it */
+	mb();
+	i->finished = 1;
+}
+
+static void raise_poll(struct mce *m)
+{
+	unsigned long flags;
+	mce_banks_t b;
+
+	memset(&b, 0xff, sizeof(mce_banks_t));
+	local_irq_save(flags);
+	machine_check_poll(0, &b);
+	local_irq_restore(flags);
+	m->finished = 0;
+}
+
+static void raise_exception(struct mce *m, struct pt_regs *pregs)
+{
+	struct pt_regs regs;
+	unsigned long flags;
+
+	if (!pregs) {
+		memset(&regs, 0, sizeof(struct pt_regs));
+		regs.ip = m->ip;
+		regs.cs = m->cs;
+		pregs = &regs;
+	}
+	/* do_machine_check() expects interrupts disabled -- at least */
+	local_irq_save(flags);
+	do_machine_check(pregs);
+	local_irq_restore(flags);
+	m->finished = 0;
+}
+
+static cpumask_var_t mce_inject_cpumask;
+static DEFINE_MUTEX(mce_inject_mutex);
+
+static int mce_raise_notify(unsigned int cmd, struct pt_regs *regs)
+{
+	int cpu = smp_processor_id();
+	struct mce *m = this_cpu_ptr(&injectm);
+	if (!cpumask_test_cpu(cpu, mce_inject_cpumask))
+		return NMI_DONE;
+	cpumask_clear_cpu(cpu, mce_inject_cpumask);
+	if (m->inject_flags & MCJ_EXCEPTION)
+		raise_exception(m, regs);
+	else if (m->status)
+		raise_poll(m);
+	return NMI_HANDLED;
+}
+
+static void mce_irq_ipi(void *info)
+{
+	int cpu = smp_processor_id();
+	struct mce *m = this_cpu_ptr(&injectm);
+
+	if (cpumask_test_cpu(cpu, mce_inject_cpumask) &&
+			m->inject_flags & MCJ_EXCEPTION) {
+		cpumask_clear_cpu(cpu, mce_inject_cpumask);
+		raise_exception(m, NULL);
+	}
+}
+
+/* Inject mce on current CPU */
+static int raise_local(void)
+{
+	struct mce *m = this_cpu_ptr(&injectm);
+	int context = MCJ_CTX(m->inject_flags);
+	int ret = 0;
+	int cpu = m->extcpu;
+
+	if (m->inject_flags & MCJ_EXCEPTION) {
+		pr_info("Triggering MCE exception on CPU %d\n", cpu);
+		switch (context) {
+		case MCJ_CTX_IRQ:
+			/*
+			 * Could do more to fake interrupts like
+			 * calling irq_enter, but the necessary
+			 * machinery isn't exported currently.
+			 */
+			fallthrough;
+		case MCJ_CTX_PROCESS:
+			raise_exception(m, NULL);
+			break;
+		default:
+			pr_info("Invalid MCE context\n");
+			ret = -EINVAL;
+		}
+		pr_info("MCE exception done on CPU %d\n", cpu);
+	} else if (m->status) {
+		pr_info("Starting machine check poll CPU %d\n", cpu);
+		raise_poll(m);
+		mce_notify_irq();
+		pr_info("Machine check poll done on CPU %d\n", cpu);
+	} else
+		m->finished = 0;
+
+	return ret;
+}
+
+static void __maybe_unused raise_mce(struct mce *m)
+{
+	int context = MCJ_CTX(m->inject_flags);
+
+	inject_mce(m);
+
+	if (context == MCJ_CTX_RANDOM)
+		return;
+
+	if (m->inject_flags & (MCJ_IRQ_BROADCAST | MCJ_NMI_BROADCAST)) {
+		unsigned long start;
+		int cpu;
+
+		get_online_cpus();
+		cpumask_copy(mce_inject_cpumask, cpu_online_mask);
+		cpumask_clear_cpu(get_cpu(), mce_inject_cpumask);
+		for_each_online_cpu(cpu) {
+			struct mce *mcpu = &per_cpu(injectm, cpu);
+			if (!mcpu->finished ||
+			    MCJ_CTX(mcpu->inject_flags) != MCJ_CTX_RANDOM)
+				cpumask_clear_cpu(cpu, mce_inject_cpumask);
+		}
+		if (!cpumask_empty(mce_inject_cpumask)) {
+			if (m->inject_flags & MCJ_IRQ_BROADCAST) {
+				/*
+				 * don't wait because mce_irq_ipi is necessary
+				 * to be sync with following raise_local
+				 */
+				preempt_disable();
+				smp_call_function_many(mce_inject_cpumask,
+					mce_irq_ipi, NULL, 0);
+				preempt_enable();
+			} else if (m->inject_flags & MCJ_NMI_BROADCAST)
+				apic->send_IPI_mask(mce_inject_cpumask,
+						NMI_VECTOR);
+		}
+		start = jiffies;
+		while (!cpumask_empty(mce_inject_cpumask)) {
+			if (!time_before(jiffies, start + 2*HZ)) {
+				pr_err("Timeout waiting for mce inject %lx\n",
+					*cpumask_bits(mce_inject_cpumask));
+				break;
+			}
+			cpu_relax();
+		}
+		raise_local();
+		put_cpu();
+		put_online_cpus();
+	} else {
+		preempt_disable();
+		raise_local();
+		preempt_enable();
+	}
+}
+
+static int mce_inject_raise(struct notifier_block *nb, unsigned long val,
+			    void *data)
+{
+	struct mce *m = (struct mce *)data;
+
+	if (!m)
+		return NOTIFY_DONE;
+
+	mutex_lock(&mce_inject_mutex);
+	raise_mce(m);
+	mutex_unlock(&mce_inject_mutex);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block inject_nb = {
+	.notifier_call  = mce_inject_raise,
+};
 
 /*
  * Caller needs to be make sure this cpu doesn't disappear
@@ -206,17 +414,23 @@ static u32 get_nbc_for_node(int node_id)
 	struct cpuinfo_x86 *c = &boot_cpu_data;
 	u32 cores_per_node;
 
-	cores_per_node = c->x86_max_cores / amd_get_nodes_per_socket();
+	cores_per_node = (c->x86_max_cores * smp_num_siblings) / amd_get_nodes_per_socket();
 
 	return cores_per_node * node_id;
 }
 
 static void toggle_nb_mca_mst_cpu(u16 nid)
 {
-	struct pci_dev *F3 = node_to_amd_nb(nid)->misc;
+	struct amd_northbridge *nb;
+	struct pci_dev *F3;
 	u32 val;
 	int err;
 
+	nb = node_to_amd_nb(nid);
+	if (!nb)
+		return;
+
+	F3 = nb->misc;
 	if (!F3)
 		return;
 
@@ -240,17 +454,47 @@ static void toggle_nb_mca_mst_cpu(u16 nid)
 		       __func__, PCI_FUNC(F3->devfn), NBCFG);
 }
 
+static void prepare_msrs(void *info)
+{
+	struct mce m = *(struct mce *)info;
+	u8 b = m.bank;
+
+	wrmsrl(MSR_IA32_MCG_STATUS, m.mcgstatus);
+
+	if (boot_cpu_has(X86_FEATURE_SMCA)) {
+		if (m.inject_flags == DFR_INT_INJ) {
+			wrmsrl(MSR_AMD64_SMCA_MCx_DESTAT(b), m.status);
+			wrmsrl(MSR_AMD64_SMCA_MCx_DEADDR(b), m.addr);
+		} else {
+			wrmsrl(MSR_AMD64_SMCA_MCx_STATUS(b), m.status);
+			wrmsrl(MSR_AMD64_SMCA_MCx_ADDR(b), m.addr);
+		}
+
+		wrmsrl(MSR_AMD64_SMCA_MCx_MISC(b), m.misc);
+		wrmsrl(MSR_AMD64_SMCA_MCx_SYND(b), m.synd);
+	} else {
+		wrmsrl(MSR_IA32_MCx_STATUS(b), m.status);
+		wrmsrl(MSR_IA32_MCx_ADDR(b), m.addr);
+		wrmsrl(MSR_IA32_MCx_MISC(b), m.misc);
+	}
+}
+
 static void do_inject(void)
 {
 	u64 mcg_status = 0;
 	unsigned int cpu = i_mce.extcpu;
 	u8 b = i_mce.bank;
 
+	i_mce.tsc = rdtsc_ordered();
+
 	if (i_mce.misc)
 		i_mce.status |= MCI_STATUS_MISCV;
 
+	if (i_mce.synd)
+		i_mce.status |= MCI_STATUS_SYNDV;
+
 	if (inj_type == SW_INJ) {
-		mce_inject_log(&i_mce);
+		mce_log(&i_mce);
 		return;
 	}
 
@@ -267,7 +511,7 @@ static void do_inject(void)
 	 */
 	if (inj_type == DFR_INT_INJ) {
 		i_mce.status |= MCI_STATUS_DEFERRED;
-		i_mce.status |= (i_mce.status & ~MCI_STATUS_UC);
+		i_mce.status &= ~MCI_STATUS_UC;
 	}
 
 	/*
@@ -275,7 +519,9 @@ static void do_inject(void)
 	 * only on the node base core. Refer to D18F3x44[NbMcaToMstCpuEn] for
 	 * Fam10h and later BKDGs.
 	 */
-	if (static_cpu_has(X86_FEATURE_AMD_DCM) && b == 4) {
+	if (boot_cpu_has(X86_FEATURE_AMD_DCM) &&
+	    b == 4 &&
+	    boot_cpu_data.x86 < 0x17) {
 		toggle_nb_mca_mst_cpu(amd_get_nb_id(cpu));
 		cpu = get_nbc_for_node(amd_get_nb_id(cpu));
 	}
@@ -286,17 +532,9 @@ static void do_inject(void)
 
 	toggle_hw_mce_inject(cpu, true);
 
-	wrmsr_on_cpu(cpu, MSR_IA32_MCG_STATUS,
-		     (u32)mcg_status, (u32)(mcg_status >> 32));
-
-	wrmsr_on_cpu(cpu, MSR_IA32_MCx_STATUS(b),
-		     (u32)i_mce.status, (u32)(i_mce.status >> 32));
-
-	wrmsr_on_cpu(cpu, MSR_IA32_MCx_ADDR(b),
-		     (u32)i_mce.addr, (u32)(i_mce.addr >> 32));
-
-	wrmsr_on_cpu(cpu, MSR_IA32_MCx_MISC(b),
-		     (u32)i_mce.misc, (u32)(i_mce.misc >> 32));
+	i_mce.mcgstatus = mcg_status;
+	i_mce.inject_flags = inj_type;
+	smp_call_function_single(cpu, prepare_msrs, &i_mce, 0);
 
 	toggle_hw_mce_inject(cpu, false);
 
@@ -323,14 +561,23 @@ err:
 static int inj_bank_set(void *data, u64 val)
 {
 	struct mce *m = (struct mce *)data;
+	u8 n_banks;
+	u64 cap;
+
+	/* Get bank count on target CPU so we can handle non-uniform values. */
+	rdmsrl_on_cpu(m->extcpu, MSR_IA32_MCG_CAP, &cap);
+	n_banks = cap & MCG_BANKCNT_MASK;
 
 	if (val >= n_banks) {
-		pr_err("Non-existent MCE bank: %llu\n", val);
+		pr_err("MCA bank %llu non-existent on CPU%d\n", val, m->extcpu);
 		return -EINVAL;
 	}
 
 	m->bank = val;
 	do_inject();
+
+	/* Reset injection struct */
+	setup_inj_struct(&i_mce);
 
 	return 0;
 }
@@ -352,6 +599,9 @@ static const char readme_msg[] =
 "misc:\t Set MCi_MISC: provide auxiliary info about the error. It is mostly\n"
 "\t used for error thresholding purposes and its validity is indicated by\n"
 "\t MCi_STATUS[MiscV].\n"
+"\n"
+"synd:\t Set MCi_SYND: provide syndrome info about the error. Only valid on\n"
+"\t Scalable MCA systems, and its validity is indicated by MCi_STATUS[SyndV].\n"
 "\n"
 "addr:\t Error address value to be written to MCi_ADDR. Log address information\n"
 "\t associated with the error.\n"
@@ -395,70 +645,61 @@ static const struct file_operations readme_fops = {
 
 static struct dfs_node {
 	char *name;
-	struct dentry *d;
 	const struct file_operations *fops;
 	umode_t perm;
 } dfs_fls[] = {
 	{ .name = "status",	.fops = &status_fops, .perm = S_IRUSR | S_IWUSR },
 	{ .name = "misc",	.fops = &misc_fops,   .perm = S_IRUSR | S_IWUSR },
 	{ .name = "addr",	.fops = &addr_fops,   .perm = S_IRUSR | S_IWUSR },
+	{ .name = "synd",	.fops = &synd_fops,   .perm = S_IRUSR | S_IWUSR },
 	{ .name = "bank",	.fops = &bank_fops,   .perm = S_IRUSR | S_IWUSR },
 	{ .name = "flags",	.fops = &flags_fops,  .perm = S_IRUSR | S_IWUSR },
 	{ .name = "cpu",	.fops = &extcpu_fops, .perm = S_IRUSR | S_IWUSR },
 	{ .name = "README",	.fops = &readme_fops, .perm = S_IRUSR | S_IRGRP | S_IROTH },
 };
 
-static int __init init_mce_inject(void)
+static void __init debugfs_init(void)
 {
-	int i;
-	u64 cap;
-
-	rdmsrl(MSR_IA32_MCG_CAP, cap);
-	n_banks = cap & MCG_BANKCNT_MASK;
+	unsigned int i;
 
 	dfs_inj = debugfs_create_dir("mce-inject", NULL);
-	if (!dfs_inj)
-		return -EINVAL;
-
-	for (i = 0; i < ARRAY_SIZE(dfs_fls); i++) {
-		dfs_fls[i].d = debugfs_create_file(dfs_fls[i].name,
-						    dfs_fls[i].perm,
-						    dfs_inj,
-						    &i_mce,
-						    dfs_fls[i].fops);
-
-		if (!dfs_fls[i].d)
-			goto err_dfs_add;
-	}
-
-	return 0;
-
-err_dfs_add:
-	while (--i >= 0)
-		debugfs_remove(dfs_fls[i].d);
-
-	debugfs_remove(dfs_inj);
-	dfs_inj = NULL;
-
-	return -ENOMEM;
-}
-
-static void __exit exit_mce_inject(void)
-{
-	int i;
 
 	for (i = 0; i < ARRAY_SIZE(dfs_fls); i++)
-		debugfs_remove(dfs_fls[i].d);
+		debugfs_create_file(dfs_fls[i].name, dfs_fls[i].perm, dfs_inj,
+				    &i_mce, dfs_fls[i].fops);
+}
+
+static int __init inject_init(void)
+{
+	if (!alloc_cpumask_var(&mce_inject_cpumask, GFP_KERNEL))
+		return -ENOMEM;
+
+	debugfs_init();
+
+	register_nmi_handler(NMI_LOCAL, mce_raise_notify, 0, "mce_notify");
+	mce_register_injector_chain(&inject_nb);
+
+	setup_inj_struct(&i_mce);
+
+	pr_info("Machine check injector initialized\n");
+
+	return 0;
+}
+
+static void __exit inject_exit(void)
+{
+
+	mce_unregister_injector_chain(&inject_nb);
+	unregister_nmi_handler(NMI_LOCAL, "mce_notify");
+
+	debugfs_remove_recursive(dfs_inj);
+	dfs_inj = NULL;
 
 	memset(&dfs_fls, 0, sizeof(dfs_fls));
 
-	debugfs_remove(dfs_inj);
-	dfs_inj = NULL;
+	free_cpumask_var(mce_inject_cpumask);
 }
-module_init(init_mce_inject);
-module_exit(exit_mce_inject);
 
+module_init(inject_init);
+module_exit(inject_exit);
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Borislav Petkov <bp@alien8.de>");
-MODULE_AUTHOR("AMD Inc.");
-MODULE_DESCRIPTION("MCE injection facility for RAS testing");
