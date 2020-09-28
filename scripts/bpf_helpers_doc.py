@@ -432,6 +432,7 @@ class PrinterHelpers(Printer):
             'struct sk_msg_md',
             'struct xdp_md',
             'struct path',
+            'struct btf_ptr',
     ]
     known_types = {
             '...',
@@ -473,6 +474,7 @@ class PrinterHelpers(Printer):
             'struct udp6_sock',
             'struct task_struct',
             'struct path',
+            'struct btf_ptr',
     }
     mapped_types = {
             'u8': '__u8',
